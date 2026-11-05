@@ -1,0 +1,11 @@
+#!/bin/sh
+set -eu
+
+ROOT="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
+mkdir -p "$ROOT/build"
+cd "$ROOT/build"
+
+qmake6 "$ROOT/anvil.pro"
+make -j"${ANVIL_BUILD_JOBS:-4}"
+
+echo "Built $ROOT/build/anvil"

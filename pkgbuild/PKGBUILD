@@ -1,0 +1,23 @@
+pkgname=anvil
+pkgver=0.1.0
+pkgrel=2
+pkgdesc='A dynamic Laravel Forge SSH directory for Omarchy'
+arch=('x86_64' 'aarch64')
+license=('MIT')
+depends=('qt6-base' 'qt6-declarative' 'qt6-wayland' 'libsecret' 'openssh' 'omarchy')
+makedepends=('gcc' 'make')
+source=()
+sha256sums=()
+
+build() {
+  cd "$startdir/.."
+  ./bin/build
+}
+
+package() {
+  cd "$startdir/.."
+  install -Dm755 build/anvil "$pkgdir/usr/bin/anvil"
+  install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+  install -Dm644 "$startdir/anvil.svg" "$pkgdir/usr/share/icons/hicolor/scalable/apps/anvil.svg"
+  install -Dm644 "$startdir/anvil.desktop" "$pkgdir/usr/share/applications/anvil.desktop"
+}

@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=Anvil
+Name[da]=Anvil
+Comment=Browse Laravel Forge servers and sites, then connect over SSH
+Comment[da]=Find servere og websteder i Laravel Forge, og forbind via SSH
+Exec=anvil open
+Icon=anvil
+Terminal=false
+Categories=Network;
+Keywords=SSH;Forge;Laravel;servers;terminal;
+StartupWMClass=anvil
