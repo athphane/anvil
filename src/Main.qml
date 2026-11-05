@@ -79,11 +79,33 @@ ApplicationWindow {
             }
             Rectangle { Layout.fillWidth: true; height: 1; color: "#2b2d34" }
             Rectangle {
+                id: errorBanner
+                objectName: "errorBanner"
                 Layout.fillWidth: true
-                implicitHeight: errorText.implicitHeight + 24
+                implicitHeight: errorContent.implicitHeight + 28
                 visible: backend.error.length > 0
-                radius: theme.radius; color: "#3a2328"; border.color: "#68414a"
-                Label { id: errorText; anchors.fill: parent; anchors.margins: 12; text: backend.error; color: "#ffbcc7"; wrapMode: Text.Wrap; textFormat: Text.PlainText }
+                radius: theme.radius; color: "#2a2025"; border.color: "#60404a"
+                property int splitAt: backend.error.indexOf("\n")
+                RowLayout {
+                    anchors.fill: parent; anchors.margins: 14; spacing: 14
+                    ColumnLayout {
+                        id: errorContent
+                        Layout.fillWidth: true; spacing: 6
+                        Label {
+                            objectName: "errorHeading"
+                            text: errorBanner.splitAt >= 0 ? backend.error.slice(0, errorBanner.splitAt) : qsTr("Something needs attention")
+                            color: "#f2c5ce"; font.bold: true; font.pixelSize: 15
+                            wrapMode: Text.Wrap; textFormat: Text.PlainText; Layout.fillWidth: true
+                        }
+                        Label {
+                            objectName: "errorBody"
+                            text: errorBanner.splitAt >= 0 ? backend.error.slice(errorBanner.splitAt + 1) : backend.error
+                            color: "#c9b4bd"; font.pixelSize: 13
+                            wrapMode: Text.Wrap; textFormat: Text.PlainText; Layout.fillWidth: true
+                        }
+                    }
+                    AnvilButton { objectName: "errorDismiss"; text: "×"; implicitWidth: 32; Layout.alignment: Qt.AlignTop; Accessible.name: qsTr("Dismiss error"); onClicked: backend.clearError() }
+                }
             }
             RowLayout {
                 visible: backend.hasToken || backend.total > 0

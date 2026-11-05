@@ -17,6 +17,7 @@ private slots:
     void sshInstallsPublicKeyForSiteUser();
     void sshExistingKeyIsNotUploadedAgain();
     void sshStopsOnHostOrNetworkFailures();
+    void sshErrorsExplainTheNextStep();
     void sshReportsCreatePermission();
     void sshWaitsWithoutRepeatedUploads();
     void sshRejectsPrivateFilesAndForeignLinks();

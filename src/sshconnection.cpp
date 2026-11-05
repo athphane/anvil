@@ -33,16 +33,43 @@ SshConnection::SshConnection(const QUrl &base, const QString &directory, const Q
         if (!m_busy) return;
         const auto error = QString::fromUtf8(m_probe.readAllStandardError());
         if (status == QProcess::NormalExit && code == 0) { openTerminal(); return; }
-        if (m_timedOut) { fail(tr("The SSH access check timed out. No key was added.")); return; }
+        const auto host = m_arguments.value(m_arguments.indexOf("--") + 1);
+        const int port = m_arguments.value(m_arguments.indexOf("-p") + 1).toInt();
+        if (m_timedOut) { fail(describeSshFailure(error, host, port, true)); return; }
         if (error.contains("REMOTE HOST IDENTIFICATION HAS CHANGED")) {
-            fail(tr("The server's SSH host key has changed. Verify it before connecting. No key was added.")); return;
+            fail(describeSshFailure(error, host, port)); return;
         }
         if (error.contains("Server accepts key:")) { openTerminal(); return; }
         const bool denied = error.contains("Permission denied") && error.contains("publickey");
         const bool unknownHost = error.contains("host key is known") && error.contains("strict checking");
         if (status == QProcess::NormalExit && code == 255 && (denied || unknownHost)) { provision(); return; }
-        fail(tr("SSH could not reach or verify this server. No key was added. %1").arg(error.trimmed().right(500)));
+        fail(describeSshFailure(error, host, port));
     });
+}
+
+QString SshConnection::describeSshFailure(const QString &diagnostics, const QString &host, int port, bool timedOut) {
+    // Verbose SSH output is useful for detecting key acceptance, but the
+    // window should show the cause and a next step rather than debug traces.
+    const auto error = diagnostics.toLower();
+    if (error.contains("remote host identification has changed"))
+        return tr("Server identity changed\nThis server's SSH identity differs from the one saved on this computer. Verify the change before connecting.");
+    if (timedOut || error.contains("connection timed out") || error.contains("operation timed out"))
+        return tr("Connection timed out\n%1 did not respond on port %2. Check the SSH port, firewall, or VPN, then try again.").arg(host).arg(port);
+    if (error.contains("connection refused"))
+        return tr("Connection refused\n%1 refused the connection on port %2. Check that SSH is running and the port is correct.").arg(host).arg(port);
+    if (error.contains("could not resolve hostname") || error.contains("name or service not known"))
+        return tr("Server not found\nCouldn't find %1. Check the hostname in Connection options.").arg(host);
+    if (error.contains("no route to host") || error.contains("network is unreachable"))
+        return tr("Server is unreachable\nCan't reach %1 on port %2. Check your network or VPN, then try again.").arg(host).arg(port);
+    if (error.contains("host key verification failed"))
+        return tr("Server identity needs verification\nOpen a normal SSH session to verify this server's identity, then try again.");
+    if (error.contains("permission denied"))
+        return tr("SSH access denied\nThe server declined access. Check the SSH user and authentication settings in Connection options.");
+    if (error.contains("no matching") || error.contains("unable to negotiate"))
+        return tr("SSH settings aren't compatible\nThe server and OpenSSH couldn't agree on connection settings. Check the server's SSH configuration.");
+    if (error.contains("connection reset") || error.contains("connection closed"))
+        return tr("Server closed the connection\n%1 ended the SSH connection. Check the server's SSH service and access rules, then try again.").arg(host);
+    return tr("SSH connection failed\nCouldn't connect to %1 on port %2. Check Connection options and try again.").arg(host).arg(port);
 }
 
 SshConnection::~SshConnection() {
@@ -157,11 +184,14 @@ void SshConnection::request(const QByteArray &method, const QUrl &url, const QJs
         m_reply = nullptr;
         if (!m_busy) return;
         const int status = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
-        if (status == 403) { fail(tr("Forge denied SSH key access. Required scope: %1.").arg(method == "POST" ? "server:create-keys" : "server:view")); return; }
+        if (status == 403) { fail(tr("Forge permission needed\nYour token needs %1 for this server. Update its permissions in Forge, then try again.").arg(method == "POST" ? "server:create-keys" : "server:view")); return; }
         if (status == 401) { fail(tr("Forge rejected this token. Open Account and enter a new token.")); return; }
-        if (status == 429) { fail(tr("Forge rate limit reached while checking SSH keys. Wait a minute, then connect again.")); return; }
+        if (status == 429) { fail(tr("Too many Forge requests\nWait a minute, then connect again.")); return; }
+        if (status == 422) { fail(tr("Public key couldn't be added\nForge didn't accept this key. Check the .pub file and whether the key is already registered for this user.")); return; }
+        if (status == 404) { fail(tr("Server wasn't found in Forge\nRefresh your connections and check that you still have access to this server.")); return; }
         if (reply->error() != QNetworkReply::NoError || status < 200 || status >= 300) {
-            fail(tr("Forge could not prepare the SSH key (HTTP %1). Check the token, key, and server access.").arg(status)); return;
+            fail(status == 0 ? tr("Can't reach Forge\nCheck your internet connection and try again.")
+                             : tr("Forge couldn't finish the request\nTry again in a moment. If it keeps happening, check the server in Forge.")); return;
         }
         const auto bytes = reply->readAll();
         QJsonParseError error;

@@ -345,6 +345,33 @@ void AnvilTests::sshStopsOnHostOrNetworkFailures() {
         QVERIFY(!finished.first().first().toBool());
         QCOMPARE(server.requests.size(), 0);
     }
+void AnvilTests::sshErrorsExplainTheNextStep() {
+        const QString noise = "debug1: no pubkey loaded from /home/example/.ssh/id_optional\ndebug1: identity file type -1\n";
+        const QList<QPair<QString, QString>> errors{
+            {"ssh: connect to host 203.0.113.7 port 2222: Connection timed out", "Connection timed out\n"},
+            {"Connection refused", "Connection refused\n"},
+            {"Could not resolve hostname example.invalid: Name or service not known", "Server not found\n"},
+            {"No route to host", "Server is unreachable\n"},
+            {"REMOTE HOST IDENTIFICATION HAS CHANGED!", "Server identity changed\n"},
+            {"Host key verification failed.", "Server identity needs verification\n"},
+            {"Permission denied (password).", "SSH access denied\n"},
+            {"Unable to negotiate: no matching host key type found", "SSH settings aren't compatible\n"},
+            {"Connection reset by peer", "Server closed the connection\n"},
+            {"unexpected OpenSSH failure", "SSH connection failed\n"}
+        };
+        for (const auto &example : errors) {
+            const auto message = SshConnection::describeSshFailure(noise + example.first, "203.0.113.7", 2222);
+            QVERIFY2(message.startsWith(example.second), qPrintable(message));
+            QVERIFY(!message.contains("debug1:"));
+            QVERIFY(!message.contains("/home/example"));
+            QVERIFY(!message.contains("type -1"));
+            QVERIFY(message.size() < 260);
+        }
+        const auto timeout = SshConnection::describeSshFailure({}, "203.0.113.7", 2222, true);
+        QVERIFY(timeout.contains("203.0.113.7"));
+        QVERIFY(timeout.contains("2222"));
+        QVERIFY(timeout.contains("firewall"));
+    }
 void AnvilTests::sshReportsCreatePermission() {
         FakeForge server;
         SshRig rig;
@@ -470,6 +497,18 @@ void AnvilTests::realQmlInteractionAndScreenshots() {
         QTest::qWait(150);
         QDir().mkpath("../../docs");
         QVERIFY(window->grabWindow().save("../../docs/screenshot.png"));
+        backend.fail(SshConnection::describeSshFailure("debug1: missing optional identity\nConnection timed out", "203.0.113.24", 22));
+        QTest::qWait(100);
+        auto heading = window->findChild<QObject *>("errorHeading"), body = window->findChild<QObject *>("errorBody");
+        auto dismiss = window->findChild<QQuickItem *>("errorDismiss");
+        QVERIFY(heading && body && dismiss);
+        QCOMPARE(heading->property("text").toString(), QString("Connection timed out"));
+        QVERIFY(body->property("text").toString().contains("firewall"));
+        QVERIFY(!body->property("text").toString().contains("debug1:"));
+        QVERIFY(window->grabWindow().save("../../docs/error.png"));
+        const auto dismissPosition = dismiss->mapToScene(QPointF(dismiss->width() / 2, dismiss->height() / 2));
+        QTest::mouseClick(window, Qt::LeftButton, Qt::NoModifier, dismissPosition.toPoint());
+        QTRY_VERIFY(backend.error().isEmpty());
         write(language, "da\n");
         QTRY_COMPARE(translator.language(), QString("da"));
         QTest::qWait(150);
@@ -489,6 +528,11 @@ void AnvilTests::realQmlInteractionAndScreenshots() {
         const auto position = compactConnect->mapToScene(QPointF(0, 0));
         QVERIFY(position.y() + compactConnect->height() <= window->height());
         QVERIFY(window->grabWindow().save("../../docs/screenshot-compact-da.png"));
+        backend.fail(SshConnection::describeSshFailure("Connection timed out", "203.0.113.24", 22));
+        QTest::qWait(100);
+        QCOMPARE(heading->property("text").toString(), QString("Forbindelsen fik intet svar"));
+        QVERIFY(window->grabWindow().save("../../docs/error-compact-da.png"));
+        backend.clearError();
         auto options = window->findChild<QObject *>("options");
         QVERIFY(options);
         QVERIFY(QMetaObject::invokeMethod(options, "open"));

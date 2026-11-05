@@ -57,6 +57,7 @@ signals:
     void refreshFinished();
     void connectionFinished(bool success);
 private:
+    friend class AnvilTests;
     struct Task { QUrl url; QString kind; QString org; };
     void next();
     void consume(const QJsonObject &document, const Task &task);

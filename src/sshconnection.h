@@ -18,6 +18,7 @@ public:
     bool busy() const { return m_busy; }
     QString status() const { return m_status; }
     QString suggestedPublicKey() const;
+    static QString describeSshFailure(const QString &diagnostics, const QString &host, int port, bool timedOut = false);
     bool start(const QString &token, const QVariantMap &entry, const QStringList &arguments,
                const QString &identity, const QString &publicKey, bool installMissing, bool sameHost, bool launchTerminal = true);
     void cancel();
