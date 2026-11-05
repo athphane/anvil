@@ -104,7 +104,19 @@ ApplicationWindow {
                             wrapMode: Text.Wrap; textFormat: Text.PlainText; Layout.fillWidth: true
                         }
                     }
-                    AnvilButton { objectName: "errorDismiss"; text: "×"; implicitWidth: 32; Layout.alignment: Qt.AlignTop; Accessible.name: qsTr("Dismiss error"); onClicked: backend.clearError() }
+                    AnvilButton {
+                        objectName: "errorDismiss"; text: "×"
+                        implicitWidth: 32; implicitHeight: 32; padding: 0
+                        leftPadding: 0; rightPadding: 0; topPadding: 0; bottomPadding: 0
+                        topInset: 0; bottomInset: 0; leftInset: 0; rightInset: 0
+                        Layout.alignment: Qt.AlignVCenter
+                        contentItem: Item {
+                            implicitWidth: 16; implicitHeight: 16
+                            Text { anchors.centerIn: parent; text: "×"; font.pixelSize: 16; color: "#e7e9ee" }
+                        }
+                        Accessible.name: qsTr("Dismiss error")
+                        onClicked: backend.clearError()
+                    }
                 }
             }
             RowLayout {
