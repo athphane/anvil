@@ -11,6 +11,12 @@ private slots:
     void apiRejectsForeignPagination();
     void apiRejectsMalformedResponses();
     void apiReportsRateLimits();
+    void cacheReusesFreshInventoryAndExcludesSecrets();
+    void cacheExpiresAfterSevenDays();
+    void cacheSurvivesFailedRefresh();
+    void cacheIsolatesTokensAndRecoversFromCorruption();
+    void cacheForgetRemovesInventory();
+    void cacheWriteFailureKeepsConnections();
     void sshKeepsRemoteDataQuoted();
     void connectionLaunchesOmarchyTerminal();
     void sshWorkingAccessSkipsForge();

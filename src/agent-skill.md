@@ -10,6 +10,7 @@ Anvil reads Forge inventory through the current organization API. Its GUI and `p
 - `anvil check --json` checks local SSH, TLS, and terminal prerequisites.
 - Set `FORGE_API_TOKEN` in the environment through a secure secret mechanism. Never include a token in command arguments, logs, or source files.
 - `anvil list --json` returns server and site targets with unique `key` values, API usernames, SSH ports, and site root directories.
+- Inventory is cached locally for seven days. Add `--refresh` to `list`, `command`, or `prepare` to force a fresh inventory fetch. A failed refresh retains the last successful snapshot and reports an error.
 - `anvil command --target '<key>' --json` returns a safely quoted SSH command without executing it.
 - `anvil prepare --target '<key>' --public-key '<file.pub>' --json` checks SSH access and adds the public key through Forge if needed, without opening a terminal. It requires `server:create-keys` for uploads and can execute `true` over SSH. Use only when the user authorizes preparing access to that target. Private key bytes are never uploaded.
 - `anvil open` opens the desktop picker, which can use a token stored in the desktop keyring.

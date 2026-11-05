@@ -8,7 +8,11 @@ Built with C++ and Qt Quick, packaged with makepkg, and installed as a single bi
 
 Open **Anvil** from the application launcher (`Super + Space`), choose **Connect Laravel Forge**, and enter a token from [Forge's API settings](https://forge.laravel.com/profile/api). The token needs `organization:view` and `server:view`; Forge uses `server:view` for site listings too. Automatic SSH key installation also needs `server:create-keys`.
 
-Leave **Remember in the desktop keyring** checked to save the token through Secret Service (`secret-tool`). Uncheck it to keep the supplied token in memory for this session. **Account → Forget token** clears the saved credential. The app does not write a token, inventory cache, or SSH configuration to disk.
+Leave **Remember in the desktop keyring** checked to save the token through Secret Service (`secret-tool`). Uncheck it to keep the supplied token in memory for this session. **Account → Forget token** clears the saved credential and that token's cached inventory. The app does not write tokens or SSH configuration to disk.
+
+Server and site inventory is cached locally for **seven days**. A fresh cache loads without Forge API requests; an older cache appears immediately while Anvil refreshes it. The same weekly schedule applies while the app remains open. **Refresh** (or Ctrl+R) always forces an API fetch. Failed or partial updates keep the last successful list and its update date, which is shown in the footer.
+
+The cache lives in `~/.cache/anvil/inventory-<id>.json` (or `$XDG_CACHE_HOME/anvil/`), with a separate file per API token and endpoint. Files are saved atomically with owner-only access. They contain display and SSH connection fields, with no API tokens, deployment URLs, deployment scripts, or private keys. Deleting these cache files makes Anvil fetch the inventory again. SSH access checks and key installation still run live when connecting.
 
 Search by server, site, organization, SSH user, or IP address. Select an entry and press Enter. Anvil checks SSH access with a noninteractive `true` command. If access works, it opens your terminal immediately. If the key is rejected, it uses Forge to add your public key for the selected server user, waits for installation, and opens the terminal. An installed key that needs a passphrase is handed to the terminal without uploading it again.
 
@@ -53,12 +57,13 @@ Run `build/anvil open --demo` for an inventory with fictional servers. Demo mode
 ```sh
 anvil check --json
 anvil list --json
+anvil list --refresh --json
 anvil command --target 'organization:site:123' --json
 anvil prepare --target 'organization:site:123' --public-key ~/.ssh/id_ed25519.pub --json
 anvil skill install --json
 ```
 
-Forge commands read `FORGE_API_TOKEN` from the environment; provide it through your secret manager, keeping it out of command arguments and shell history. Commands work without a display, emit JSON, and exit 0 or 1. Errors go to stderr. `command` prints a quoted SSH command without executing it. `prepare` checks access and can install a public key through Forge without opening a terminal; it can execute the noninteractive SSH check and change server access. `skill install` installs the bundled guide at `~/.agents/skills/anvil/SKILL.md`, refusing to overwrite an existing file.
+Forge commands read `FORGE_API_TOKEN` from the environment; provide it through your secret manager, keeping it out of command arguments and shell history. Inventory uses the same seven-day cache as the GUI; add `--refresh` to bypass it. Commands work without a display, emit JSON, and exit 0 or 1. Errors go to stderr. `command` prints a quoted SSH command without executing it. `prepare` checks access and can install a public key through Forge without opening a terminal; it can execute the noninteractive SSH check and change server access. `skill install` installs the bundled guide at `~/.agents/skills/anvil/SKILL.md`, refusing to overwrite an existing file.
 
 ## API and limits
 

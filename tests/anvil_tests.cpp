@@ -50,6 +50,16 @@ public:
         });
     }
     QUrl base() const { return QUrl(QString("http://127.0.0.1:%1/api/").arg(serverPort())); }
+    void inventory(const QString &name = "prod") {
+        status = 200;
+        respond = [name](const QByteArray &path) -> QByteArray {
+            if (path == "/api/orgs") return R"({"data":[{"id":"1","attributes":{"slug":"studio"}}]})";
+            if (path == "/api/orgs/studio/servers") {
+                return QJsonDocument(QJsonObject{{"data",QJsonArray{QJsonObject{{"id","44"},{"attributes",QJsonObject{{"id",44},{"name",name},{"ip_address","203.0.113.7"},{"ssh_port",2222},{"is_ready",true},{"local_public_key","do-not-cache-this-extra-field"}}}}}}}).toJson();
+            }
+            return R"({"data":[{"id":"81","attributes":{"name":"example.com","user":"isolated","root_directory":"/home/isolated/example.com/current","deployment_url":"do-not-cache-this-secret-url","deployment_script":"do-not-cache-this-script"},"relationships":{"server":{"data":{"id":"44"}}}}]})";
+        };
+    }
 };
 
 class SshRig {
@@ -239,6 +249,151 @@ void AnvilTests::connectionLaunchesOmarchyTerminal() {
         QVERIFY(data.startsWith("launch\nterminal\n"));
         QVERIFY(data.contains("-p\n2222\n"));
         QVERIFY(data.contains("-l\nforge\n--\n203.0.113.8\n"));
+    }
+void AnvilTests::cacheReusesFreshInventoryAndExcludesSecrets() {
+        FakeForge server; server.inventory();
+        QTemporaryDir directory;
+        Backend first(false, server.base(), nullptr, directory.path());
+        QSignalSpy fetched(&first, &Backend::refreshFinished);
+        first.authenticate("private-test-token", false);
+        QTRY_COMPARE(fetched.count(), 1);
+        QVERIFY2(first.error().isEmpty(), qPrintable(first.error()));
+        QCOMPARE(first.total(), 2);
+        QCOMPARE(server.requests.size(), 3);
+        QFile file(first.m_cacheFile); QVERIFY(file.open(QIODevice::ReadOnly));
+        const auto bytes = file.readAll();
+        QVERIFY(!bytes.contains("private-test-token"));
+        QVERIFY(!bytes.contains("do-not-cache"));
+        QVERIFY(!bytes.contains("deployment_script"));
+        QVERIFY(!(file.permissions() & (QFile::ReadGroup | QFile::ReadOther | QFile::WriteOther)));
+        Backend second(false, server.base(), nullptr, directory.path());
+        QSignalSpy loaded(&second, &Backend::refreshFinished);
+        second.authenticate("private-test-token", false);
+        QCOMPARE(loaded.count(), 1);
+        QCOMPARE(server.requests.size(), 3);
+        QCOMPARE(second.total(), 2);
+        QCOMPARE(second.inventoryUpdatedAt(), first.inventoryUpdatedAt());
+        QVERIFY(!second.busy());
+        second.setFilter(2);
+        const auto site = second.entries().first().toMap();
+        QCOMPARE(site.value("serverId").toString(), "44");
+        QCOMPARE(site.value("user").toString(), "isolated");
+        QVERIFY(second.command(site).contains("example.com/current"));
+        server.inventory("renamed-prod");
+        second.refresh();
+        QCOMPARE(second.total(), 2);
+        QTRY_COMPARE(loaded.count(), 2);
+        QCOMPARE(server.requests.size(), 6);
+        second.setFilter(1);
+        QCOMPARE(second.entries().first().toMap().value("name").toString(), "renamed-prod");
+        Backend forced(false, server.base(), nullptr, directory.path());
+        QSignalSpy forcedFetch(&forced, &Backend::refreshFinished);
+        forced.authenticate("private-test-token", false, true);
+        QTRY_COMPARE(forcedFetch.count(), 1);
+        QCOMPARE(server.requests.size(), 9);
+    }
+void AnvilTests::cacheExpiresAfterSevenDays() {
+        FakeForge server; server.inventory();
+        QTemporaryDir directory;
+        Backend first(false, server.base(), nullptr, directory.path());
+        QSignalSpy fetched(&first, &Backend::refreshFinished);
+        first.authenticate("test-token", false);
+        QTRY_COMPARE(fetched.count(), 1);
+        QFile file(first.m_cacheFile); QVERIFY(file.open(QIODevice::ReadOnly));
+        auto document = QJsonDocument::fromJson(file.readAll()).object(); file.close();
+        document["fetched_at"] = QDateTime::currentDateTimeUtc().addDays(-8).toString(Qt::ISODate);
+        write(first.m_cacheFile, QJsonDocument(document).toJson());
+        server.inventory("updated-prod");
+        Backend second(false, server.base(), nullptr, directory.path());
+        QSignalSpy loaded(&second, &Backend::refreshFinished);
+        second.authenticate("test-token", false);
+        QCOMPARE(second.total(), 2);
+        QVERIFY(second.busy());
+        QTRY_COMPARE(loaded.count(), 1);
+        QCOMPARE(server.requests.size(), 6);
+        second.setFilter(1);
+        QCOMPARE(second.entries().first().toMap().value("name").toString(), "updated-prod");
+        QVERIFY(QDateTime::fromString(second.inventoryUpdatedAt(), Qt::ISODate).daysTo(QDateTime::currentDateTimeUtc()) < 1);
+    }
+void AnvilTests::cacheSurvivesFailedRefresh() {
+        FakeForge server; server.inventory();
+        QTemporaryDir directory;
+        Backend first(false, server.base(), nullptr, directory.path());
+        QSignalSpy fetched(&first, &Backend::refreshFinished);
+        first.authenticate("test-token", false);
+        QTRY_COMPARE(fetched.count(), 1);
+        QFile file(first.m_cacheFile); QVERIFY(file.open(QIODevice::ReadOnly));
+        const auto bytes = file.readAll(); file.close();
+        const auto previous = first.allEntries();
+        const auto timestamp = first.inventoryUpdatedAt();
+        server.respond = [&server](const QByteArray &path) -> QByteArray {
+            server.status = 200;
+            if (path == "/api/orgs") return R"({"data":[{"id":"1","attributes":{"slug":"studio"}}]})";
+            if (path.endsWith("/servers")) return R"({"data":[{"id":"99","attributes":{"name":"partial-new-server","ip_address":"192.0.2.8"}}]})";
+            server.status = 503; return "{}";
+        };
+        first.refresh();
+        QCOMPARE(first.allEntries(), previous);
+        QTRY_COMPARE(fetched.count(), 2);
+        QVERIFY(!first.error().isEmpty());
+        QCOMPARE(first.allEntries(), previous);
+        QCOMPARE(first.inventoryUpdatedAt(), timestamp);
+        QVERIFY(first.message().contains("saved list"));
+        QVERIFY(file.open(QIODevice::ReadOnly)); QCOMPARE(file.readAll(), bytes);
+    }
+void AnvilTests::cacheIsolatesTokensAndRecoversFromCorruption() {
+        FakeForge server; server.inventory();
+        QTemporaryDir directory;
+        Backend first(false, server.base(), nullptr, directory.path());
+        QSignalSpy fetched(&first, &Backend::refreshFinished);
+        first.authenticate("token-one", false);
+        QTRY_COMPARE(fetched.count(), 1);
+        const auto firstFile = first.m_cacheFile;
+        Backend second(false, server.base(), nullptr, directory.path());
+        QSignalSpy loaded(&second, &Backend::refreshFinished);
+        second.authenticate("token-two", false);
+        QTRY_COMPARE(loaded.count(), 1);
+        QCOMPARE(server.requests.size(), 6);
+        QVERIFY(second.m_cacheFile != firstFile);
+        write(firstFile, "broken JSON");
+        Backend recovered(false, server.base(), nullptr, directory.path());
+        QSignalSpy recoveredFetch(&recovered, &Backend::refreshFinished);
+        recovered.authenticate("token-one", false);
+        QTRY_COMPARE(recoveredFetch.count(), 1);
+        QCOMPARE(server.requests.size(), 9);
+        QCOMPARE(recovered.total(), 2);
+    }
+void AnvilTests::cacheForgetRemovesInventory() {
+        FakeForge server; server.inventory();
+        QTemporaryDir directory;
+        Backend backend(false, server.base(), nullptr, directory.path());
+        QSignalSpy fetched(&backend, &Backend::refreshFinished);
+        backend.authenticate("test-token", false);
+        QTRY_COMPARE(fetched.count(), 1);
+        const auto path = backend.m_cacheFile;
+        const auto executable = directory.filePath("secret-tool");
+        write(executable, "#!/bin/sh\nexit 0\n");
+        QFile::setPermissions(executable, QFile::ReadOwner | QFile::WriteOwner | QFile::ExeOwner);
+        const auto previous = qgetenv("PATH");
+        auto restore = qScopeGuard([previous] { qputenv("PATH", previous); });
+        qputenv("PATH", directory.path().toUtf8());
+        backend.forgetToken();
+        QTRY_VERIFY(!backend.m_secretBusy);
+        QVERIFY(!QFileInfo::exists(path));
+        QCOMPARE(backend.total(), 0);
+        QVERIFY(backend.inventoryUpdatedAt().isEmpty());
+    }
+void AnvilTests::cacheWriteFailureKeepsConnections() {
+        FakeForge server; server.inventory();
+        QTemporaryDir directory;
+        const auto notDirectory = directory.filePath("file");
+        write(notDirectory, "not a directory");
+        Backend backend(false, server.base(), nullptr, notDirectory);
+        QSignalSpy fetched(&backend, &Backend::refreshFinished);
+        backend.authenticate("test-token", false);
+        QTRY_COMPARE(fetched.count(), 1);
+        QCOMPARE(backend.total(), 2);
+        QVERIFY(backend.error().contains("couldn't save the cache"));
     }
 void AnvilTests::themeReloadsAfterAtomicReplacement() {
         QTemporaryDir dir;
@@ -509,6 +664,14 @@ void AnvilTests::realQmlInteractionAndScreenshots() {
         const auto dismissPosition = dismiss->mapToScene(QPointF(dismiss->width() / 2, dismiss->height() / 2));
         QTest::mouseClick(window, Qt::LeftButton, Qt::NoModifier, dismissPosition.toPoint());
         QTRY_VERIFY(backend.error().isEmpty());
+        backend.m_lastFetched = QDateTime::fromString("2026-11-01T12:00:00Z", Qt::ISODate);
+        emit backend.stateChanged();
+        QTest::qWait(100);
+        auto updated = window->findChild<QObject *>("inventoryUpdated");
+        QVERIFY(updated && updated->property("visible").toBool());
+        QVERIFY(updated->property("text").toString().startsWith("Updated "));
+        QVERIFY(window->grabWindow().save("../../docs/cache.png"));
+        backend.m_lastFetched = {}; emit backend.stateChanged();
         write(language, "da\n");
         QTRY_COMPARE(translator.language(), QString("da"));
         QTest::qWait(150);
@@ -528,6 +691,12 @@ void AnvilTests::realQmlInteractionAndScreenshots() {
         const auto position = compactConnect->mapToScene(QPointF(0, 0));
         QVERIFY(position.y() + compactConnect->height() <= window->height());
         QVERIFY(window->grabWindow().save("../../docs/screenshot-compact-da.png"));
+        backend.m_lastFetched = QDateTime::fromString("2026-11-01T12:00:00Z", Qt::ISODate);
+        emit backend.stateChanged();
+        QTest::qWait(100);
+        QVERIFY(updated->property("text").toString().startsWith("Opdateret "));
+        QVERIFY(window->grabWindow().save("../../docs/cache-compact-da.png"));
+        backend.m_lastFetched = {}; emit backend.stateChanged();
         backend.fail(SshConnection::describeSshFailure("Connection timed out", "203.0.113.24", 22));
         QTest::qWait(100);
         QCOMPARE(heading->property("text").toString(), QString("Forbindelsen fik intet svar"));

@@ -36,7 +36,7 @@ int main(int argc, char *argv[]) {
             stream << QJsonDocument(value).toJson(QJsonDocument::Compact) << '\n';
         };
         if (mode == "--help" || mode == "help") {
-            QTextStream(stdout) << "Anvil — Laravel Forge SSH directory\n\nanvil open [--demo]\nanvil list --json\nanvil command --target <key> --json\nanvil prepare --target <key> [--public-key <file.pub>] [--identity <file>] --json\nanvil check --json\nanvil skill install [--json]\n\nCLI Forge commands read FORGE_API_TOKEN from the environment.\nPrepare checks SSH access and can add a public key through Forge without opening a terminal.\n";
+            QTextStream(stdout) << "Anvil — Laravel Forge SSH directory\n\nanvil open [--demo]\nanvil list [--refresh] --json\nanvil command --target <key> [--refresh] --json\nanvil prepare --target <key> [--public-key <file.pub>] [--identity <file>] [--refresh] --json\nanvil check --json\nanvil skill install [--json]\n\nCLI Forge commands read FORGE_API_TOKEN from the environment.\nInventory is cached for seven days; --refresh forces an API fetch.\nPrepare checks SSH access and can add a public key through Forge without opening a terminal.\n";
             return 0;
         }
         if (mode == "skill" && args.contains("install")) {
@@ -84,7 +84,7 @@ int main(int argc, char *argv[]) {
             }
             output({{"error","Connection not found."}}, true); app.exit(1);
         });
-        QTimer::singleShot(0, &backend, [&] { backend.authenticate(token, false); });
+        QTimer::singleShot(0, &backend, [&] { backend.authenticate(token, false, args.contains("--refresh")); });
         return app.exec();
     }
     QQuickStyle::setStyle("Material");

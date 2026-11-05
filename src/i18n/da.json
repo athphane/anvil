@@ -142,5 +142,9 @@
   "Public key couldn't be added\nForge didn't accept this key. Check the .pub file and whether the key is already registered for this user.": "Den offentlige nøgle kunne ikke tilføjes\nForge accepterede ikke denne nøgle. Kontrollér .pub-filen, og om nøglen allerede er registreret for denne bruger.",
   "Server wasn't found in Forge\nRefresh your connections and check that you still have access to this server.": "Serveren blev ikke fundet i Forge\nOpdater dine forbindelser, og kontrollér, at du stadig har adgang til serveren.",
   "Can't reach Forge\nCheck your internet connection and try again.": "Kan ikke nå Forge\nKontrollér din internetforbindelse, og prøv igen.",
-  "Forge couldn't finish the request\nTry again in a moment. If it keeps happening, check the server in Forge.": "Forge kunne ikke afslutte forespørgslen\nPrøv igen om et øjeblik. Kontrollér serveren i Forge, hvis problemet fortsætter."
+  "Forge couldn't finish the request\nTry again in a moment. If it keeps happening, check the server in Forge.": "Forge kunne ikke afslutte forespørgslen\nPrøv igen om et øjeblik. Kontrollér serveren i Forge, hvis problemet fortsætter.",
+  "Updated %1": "Opdateret %1",
+  "The saved connection list could not be removed. Check the permissions of Anvil's cache folder.": "Den gemte forbindelsesliste kunne ikke fjernes. Kontrollér tilladelserne til Anvils cachemappe.",
+  "Connections loaded, but couldn't save the cache\nCheck the permissions of Anvil's cache folder. The list will be fetched again next time.": "Forbindelserne er indlæst, men kunne ikke gemmes\nKontrollér tilladelserne til Anvils cachemappe. Listen hentes igen næste gang.",
+  "Couldn't update connections. Your saved list is still available.": "Kunne ikke opdatere forbindelserne. Din gemte liste er stadig tilgængelig."
 }

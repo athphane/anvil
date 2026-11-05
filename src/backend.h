@@ -8,6 +8,8 @@
 #include <QVariantList>
 #include <functional>
 #include "sshconnection.h"
+#include <QDateTime>
+#include <QTimer>
 
 class Backend : public QObject {
     Q_OBJECT
@@ -22,8 +24,9 @@ class Backend : public QObject {
     Q_PROPERTY(bool demo READ demo CONSTANT)
     Q_PROPERTY(bool connecting READ connecting NOTIFY stateChanged)
     Q_PROPERTY(QString suggestedPublicKey READ suggestedPublicKey CONSTANT)
+    Q_PROPERTY(QString inventoryUpdatedAt READ inventoryUpdatedAt NOTIFY stateChanged)
 public:
-    explicit Backend(bool demo = false, const QUrl &base = QUrl("https://forge.laravel.com/api/"), QObject *parent = nullptr);
+    explicit Backend(bool demo = false, const QUrl &base = QUrl("https://forge.laravel.com/api/"), QObject *parent = nullptr, const QString &cacheDirectory = {});
     QVariantList entries() const;
     QVariantList allEntries() const { return m_entries; }
     bool busy() const { return m_busy; }
@@ -36,9 +39,10 @@ public:
     bool demo() const { return m_demo; }
     bool connecting() const { return m_connection.busy(); }
     QString suggestedPublicKey() const { return m_demo ? "~/.ssh/id_ed25519.pub" : m_connection.suggestedPublicKey(); }
+    QString inventoryUpdatedAt() const { return m_lastFetched.toString(Qt::ISODate); }
     void setQuery(const QString &query);
     void setFilter(int filter);
-    Q_INVOKABLE void authenticate(const QString &token, bool remember);
+    Q_INVOKABLE void authenticate(const QString &token, bool remember, bool forceRefresh = false);
     Q_INVOKABLE void restoreToken();
     Q_INVOKABLE void forgetToken();
     Q_INVOKABLE void refresh();
@@ -63,6 +67,10 @@ private:
     void consume(const QJsonObject &document, const Task &task);
     void rebuild();
     void fail(const QString &error);
+    void fetchFailed(const QString &error);
+    bool loadCache();
+    bool saveCache();
+    void scheduleRefresh();
     void secret(const QStringList &arguments, const QByteArray &input, std::function<void(int, const QByteArray &)> callback);
     QUrl endpoint(const QString &path) const;
     QUrl m_base;
@@ -72,7 +80,11 @@ private:
     QQueue<Task> m_tasks;
     QSet<QString> m_seen;
     QVariantList m_entries, m_servers, m_sites;
+    QVariantList m_pendingServers, m_pendingSites;
     QString m_token, m_query, m_error, m_message;
-    bool m_busy = false, m_demo = false, m_secretBusy = false;
+    QString m_cacheDirectory, m_cacheFile;
+    QDateTime m_lastFetched;
+    QTimer m_cacheTimer;
+    bool m_busy = false, m_demo = false, m_secretBusy = false, m_fetchFailed = false;
     int m_filter = 0, m_generation = 0, m_authGeneration = 0;
 };

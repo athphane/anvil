@@ -252,6 +252,12 @@ ApplicationWindow {
             RowLayout {
                 Layout.fillWidth: true
                 Label { text: backend.busy ? qsTr("Syncing with Forge…") : backend.message || (translator.language, qsTr("%n connections", "", backend.total)); color: "#979daa"; font.pixelSize: 12; elide: Text.ElideRight; Layout.fillWidth: true }
+                Label {
+                    objectName: "inventoryUpdated"
+                    visible: backend.inventoryUpdatedAt.length > 0
+                    text: backend.inventoryUpdatedAt.length ? (translator.language, qsTr("Updated %1").arg(Qt.formatDateTime(new Date(backend.inventoryUpdatedAt), Qt.locale().dateFormat(Locale.ShortFormat)))) : ""
+                    color: "#717988"; font.pixelSize: 11; Layout.rightMargin: 10
+                }
                 Label { text: win.compact ? qsTr("Enter  Connect    ?  Shortcuts") : qsTr("Ctrl+K  Search    Enter  Connect    ?  Shortcuts"); color: "#717988"; font.pixelSize: 11 }
             }
         }

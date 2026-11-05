@@ -1,5 +1,6 @@
 #include "backend.h"
 #include <QClipboard>
+#include <QCryptographicHash>
 #include <QDesktopServices>
 #include <QDir>
 #include <QFileInfo>
@@ -9,13 +10,34 @@
 #include <QJsonObject>
 #include <QNetworkRequest>
 #include <QRegularExpression>
+#include <QSaveFile>
 #include <QStandardPaths>
 #include <QTimer>
 #include <QUrlQuery>
 #include <algorithm>
 #include <memory>
 
-Backend::Backend(bool demo, const QUrl &base, QObject *parent) : QObject(parent), m_base(base), m_connection(base), m_demo(demo) {
+namespace {
+constexpr qint64 cacheSeconds = 7 * 24 * 60 * 60;
+QVariantMap inventoryFields(const QVariantMap &source, bool server) {
+    QVariantMap result;
+    const QStringList keys = server
+        ? QStringList{"id", "apiId", "org", "name", "host", "port", "provider", "region", "ready"}
+        : QStringList{"id", "org", "serverId", "name", "user", "path"};
+    for (const auto &key : keys) if (source.contains(key)) result[key] = source.value(key);
+    return result;
+}
+}
+
+Backend::Backend(bool demo, const QUrl &base, QObject *parent, const QString &cacheDirectory)
+    : QObject(parent), m_base(base), m_connection(base),
+      m_cacheDirectory(!cacheDirectory.isEmpty() ? cacheDirectory
+          : base == QUrl("https://forge.laravel.com/api/") ? QStandardPaths::writableLocation(QStandardPaths::CacheLocation) : QString()), m_demo(demo) {
+    m_cacheTimer.setSingleShot(true);
+    connect(&m_cacheTimer, &QTimer::timeout, this, [this] {
+        if (m_busy || connecting()) m_cacheTimer.start(60000);
+        else refresh();
+    });
     connect(&m_connection, &SshConnection::changed, this, [this] { m_message = m_connection.status(); emit stateChanged(); });
     connect(&m_connection, &SshConnection::failed, this, &Backend::fail);
     connect(&m_connection, &SshConnection::finished, this, &Backend::connectionFinished);
@@ -48,8 +70,51 @@ QVariantList Backend::entries() const {
 void Backend::setQuery(const QString &query) { if (m_query != query) { m_query = query; emit entriesChanged(); } }
 void Backend::setFilter(int filter) { if (m_filter != filter) { m_filter = filter; emit entriesChanged(); } }
 void Backend::fail(const QString &error) { m_error = error; emit stateChanged(); }
+void Backend::fetchFailed(const QString &error) { m_fetchFailed = true; fail(error); }
 void Backend::clearError() { m_error.clear(); emit stateChanged(); }
 QUrl Backend::endpoint(const QString &path) const { return m_base.resolved(QUrl(path)); }
+
+bool Backend::loadCache() {
+    QFile file(m_cacheFile);
+    if (m_cacheFile.isEmpty() || !file.open(QIODevice::ReadOnly) || file.size() > 16 * 1024 * 1024) return false;
+    const auto document = QJsonDocument::fromJson(file.readAll()).object();
+    const auto fetched = QDateTime::fromString(document.value("fetched_at").toString(), Qt::ISODate);
+    if (document.value("version").toInt() != 1 || !fetched.isValid()
+        || !document.value("servers").isArray() || !document.value("sites").isArray()) return false;
+    QVariantList servers, sites;
+    for (const auto &pair : {qMakePair(document.value("servers").toArray(), true), qMakePair(document.value("sites").toArray(), false)}) {
+        for (const auto &value : pair.first) {
+            if (!value.isObject()) return false;
+            const auto row = inventoryFields(value.toObject().toVariantMap(), pair.second);
+            if (row.value("id").toString().isEmpty() || row.value("org").toString().isEmpty()) return false;
+            if (pair.second) servers.append(row); else sites.append(row);
+        }
+    }
+    m_servers = servers; m_sites = sites; m_lastFetched = fetched.toUTC();
+    rebuild(); emit stateChanged();
+    return true;
+}
+
+bool Backend::saveCache() {
+    if (m_cacheFile.isEmpty()) return true;
+    if (!QDir().mkpath(m_cacheDirectory)) return false;
+    if (!QFile::setPermissions(m_cacheDirectory, QFile::ReadOwner | QFile::WriteOwner | QFile::ExeOwner)) return false;
+    QJsonArray servers, sites;
+    // Forge responses also contain deployment data. Persist only the fields
+    // needed to display inventory and connect; never credentials or scripts.
+    for (const auto &server : m_servers) servers.append(QJsonObject::fromVariantMap(inventoryFields(server.toMap(), true)));
+    for (const auto &site : m_sites) sites.append(QJsonObject::fromVariantMap(inventoryFields(site.toMap(), false)));
+    const auto bytes = QJsonDocument(QJsonObject{{"version",1},{"fetched_at",inventoryUpdatedAt()},{"servers",servers},{"sites",sites}}).toJson(QJsonDocument::Compact);
+    QSaveFile file(m_cacheFile);
+    if (!file.open(QIODevice::WriteOnly) || !file.setPermissions(QFile::ReadOwner | QFile::WriteOwner)) return false;
+    return file.write(bytes) == bytes.size() && file.commit();
+}
+
+void Backend::scheduleRefresh() {
+    if (m_demo || !m_lastFetched.isValid()) return;
+    const auto age = m_lastFetched.secsTo(QDateTime::currentDateTimeUtc());
+    m_cacheTimer.start(int((age >= 0 && age < cacheSeconds ? cacheSeconds - age : cacheSeconds) * 1000));
+}
 
 void Backend::secret(const QStringList &arguments, const QByteArray &input, std::function<void(int, const QByteArray &)> callback) {
     const auto executable = QStandardPaths::findExecutable("secret-tool");
@@ -86,13 +151,23 @@ void Backend::restoreToken() {
     });
 }
 
-void Backend::authenticate(const QString &token, bool remember) {
+void Backend::authenticate(const QString &token, bool remember, bool forceRefresh) {
     if (m_demo) return;
     if (m_secretBusy) { fail(tr("Please wait for the desktop keyring.")); return; }
     m_connection.cancel();
     ++m_authGeneration;
     if (token.trimmed().isEmpty() || token.contains('\n') || token.contains('\r')) { fail(tr("Enter a valid Forge API token.")); return; }
+    ++m_generation;
+    if (m_reply) m_reply->abort();
+    m_cacheTimer.stop(); m_busy = false; m_tasks.clear(); m_error.clear(); m_message.clear();
+    m_servers.clear(); m_sites.clear(); m_pendingServers.clear(); m_pendingSites.clear(); m_entries.clear();
+    m_lastFetched = {};
     m_token = token.trimmed();
+    // Each credential gets its own inventory so switching accounts or token
+    // scopes cannot reuse a different token's cached access list.
+    m_cacheFile = m_cacheDirectory.isEmpty() ? QString() : QDir(m_cacheDirectory).filePath("inventory-" + QString::fromLatin1(QCryptographicHash::hash(m_base.toEncoded() + '\0' + m_token.toUtf8(), QCryptographicHash::Sha256).toHex()) + ".json");
+    const bool cached = loadCache();
+    emit entriesChanged(); emit stateChanged();
     if (remember) {
         m_secretBusy = true;
         secret({"store", "--label=Anvil — Laravel Forge", "application", "anvil", "service", "laravel-forge"}, m_token.toUtf8(), [this](int code, const QByteArray &) {
@@ -100,31 +175,39 @@ void Backend::authenticate(const QString &token, bool remember) {
             if (code != 0) fail(tr("The token could not be saved to your keyring. It is available for this session."));
         });
     }
-    refresh();
+    const auto age = m_lastFetched.secsTo(QDateTime::currentDateTimeUtc());
+    if (cached && !forceRefresh && age >= 0 && age < cacheSeconds) { scheduleRefresh(); emit refreshFinished(); }
+    else refresh();
 }
 
 void Backend::forgetToken() {
     if (m_demo) return;
     if (m_secretBusy) { fail(tr("Please wait for the desktop keyring.")); return; }
     m_connection.cancel();
+    m_cacheTimer.stop();
+    const bool removed = m_cacheFile.isEmpty() || !QFile::exists(m_cacheFile) || QFile::remove(m_cacheFile);
     ++m_authGeneration;
     ++m_generation;
     if (m_reply) m_reply->abort();
-    m_token.clear(); m_tasks.clear(); m_entries.clear(); m_servers.clear(); m_sites.clear();
+    m_token.clear(); m_tasks.clear(); m_entries.clear(); m_servers.clear(); m_sites.clear(); m_pendingServers.clear(); m_pendingSites.clear();
+    m_cacheFile.clear(); m_lastFetched = {};
     m_busy = false; m_error.clear(); m_message.clear();
     emit entriesChanged(); emit stateChanged();
     m_secretBusy = true;
-    secret({"clear", "application", "anvil", "service", "laravel-forge"}, {}, [this](int code, const QByteArray &) {
+    secret({"clear", "application", "anvil", "service", "laravel-forge"}, {}, [this, removed](int code, const QByteArray &) {
         m_secretBusy = false;
         if (code != 0 && code != 1) fail(tr("The saved token could not be removed. Unlock your keyring and try again."));
+        else if (!removed) fail(tr("The saved connection list could not be removed. Check the permissions of Anvil's cache folder."));
     });
 }
 
 void Backend::refresh() {
     if (m_demo || m_busy || connecting() || !hasToken()) return;
-    ++m_generation; m_error.clear(); m_message.clear(); m_servers.clear(); m_sites.clear(); m_entries.clear(); m_seen.clear(); m_tasks.clear();
+    ++m_generation; m_error.clear(); m_message.clear(); m_pendingServers.clear(); m_pendingSites.clear(); m_seen.clear(); m_tasks.clear();
+    m_cacheTimer.stop();
+    m_fetchFailed = false;
     m_busy = true;
-    emit entriesChanged(); emit stateChanged();
+    emit stateChanged();
     m_tasks.enqueue({endpoint("orgs"), "orgs", {}});
     next();
 }
@@ -132,24 +215,36 @@ void Backend::refresh() {
 void Backend::next() {
     if (m_tasks.isEmpty()) {
         m_busy = false;
-        rebuild();
         int unmatched = 0;
-        for (const auto &value : m_sites) {
+        for (const auto &value : m_pendingSites) {
             const auto site = value.toMap();
-            const bool matched = std::any_of(m_servers.cbegin(), m_servers.cend(), [&site](const QVariant &serverValue) {
+            const bool matched = std::any_of(m_pendingServers.cbegin(), m_pendingServers.cend(), [&site](const QVariant &serverValue) {
                 const auto server = serverValue.toMap();
                 return !site.value("serverId").toString().isEmpty() && site.value("serverId") == server.value("id") && site.value("org") == server.value("org");
             });
             if (!matched) ++unmatched;
         }
-        if (unmatched > 0 && m_error.isEmpty()) fail(tr("Forge returned %n sites without a matching server. Refresh or check server access.", nullptr, unmatched));
+        if (unmatched > 0 && !m_fetchFailed) fetchFailed(tr("Forge returned %n sites without a matching server. Refresh or check server access.", nullptr, unmatched));
+        if (!m_fetchFailed) {
+            m_servers = m_pendingServers; m_sites = m_pendingSites;
+            m_lastFetched = QDateTime::currentDateTimeUtc();
+            rebuild();
+            if (!saveCache()) fail(tr("Connections loaded, but couldn't save the cache\nCheck the permissions of Anvil's cache folder. The list will be fetched again next time."));
+        } else if (!m_lastFetched.isValid()) {
+            m_servers = m_pendingServers; m_sites = m_pendingSites;
+            rebuild();
+        } else {
+            m_message = tr("Couldn't update connections. Your saved list is still available.");
+        }
+        m_pendingServers.clear(); m_pendingSites.clear();
+        scheduleRefresh();
         if (!m_servers.isEmpty() && m_sites.isEmpty() && m_error.isEmpty()) m_message = tr("Loaded %n servers; Forge returned no sites.", nullptr, m_servers.size());
         if (m_entries.isEmpty() && m_error.isEmpty()) m_message = tr("No servers or sites are visible to this token.");
         emit stateChanged(); emit refreshFinished();
         return;
     }
     const Task task = m_tasks.dequeue();
-    if (m_seen.contains(task.url.toString())) { fail(tr("Forge returned a repeated pagination link.")); next(); return; }
+    if (m_seen.contains(task.url.toString())) { fetchFailed(tr("Forge returned a repeated pagination link.")); next(); return; }
     m_seen.insert(task.url.toString());
     QNetworkRequest request(task.url);
     request.setRawHeader("Authorization", "Bearer " + m_token.toUtf8());
@@ -167,16 +262,16 @@ void Backend::next() {
         if (generation != m_generation) return;
         const int status = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
         if (reply->error() != QNetworkReply::NoError || status != 200) {
-            if (status == 401) { fail(tr("Forge rejected this token. Open Account and enter a new token.")); m_tasks.clear(); }
-            else if (status == 403) fail(tr("This token cannot read %1. Required scope: %2.").arg(task.url.path(), task.kind == "orgs" ? "organization:view" : "server:view"));
+            if (status == 401) { fetchFailed(tr("Forge rejected this token. Open Account and enter a new token.")); m_tasks.clear(); }
+            else if (status == 403) fetchFailed(tr("This token cannot read %1. Required scope: %2.").arg(task.url.path(), task.kind == "orgs" ? "organization:view" : "server:view"));
             else if (status == 429) {
-                fail(tr("Forge rate limit reached. Wait %1 seconds, then refresh.").arg(QString::fromUtf8(reply->rawHeader("Retry-After").isEmpty() ? QByteArray("60") : reply->rawHeader("Retry-After"))));
+                fetchFailed(tr("Forge rate limit reached. Wait %1 seconds, then refresh.").arg(QString::fromUtf8(reply->rawHeader("Retry-After").isEmpty() ? QByteArray("60") : reply->rawHeader("Retry-After"))));
                 m_tasks.clear();
-            } else fail(tr("Could not load %1 (HTTP %2). Check your connection and try again.").arg(task.url.path()).arg(status));
+            } else fetchFailed(tr("Could not load %1 (HTTP %2). Check your connection and try again.").arg(task.url.path()).arg(status));
         } else {
             QJsonParseError error;
             const auto document = QJsonDocument::fromJson(reply->readAll(), &error);
-            if (error.error != QJsonParseError::NoError || !document.object().value("data").isArray()) fail(tr("Forge returned an unexpected response."));
+            if (error.error != QJsonParseError::NoError || !document.object().value("data").isArray()) fetchFailed(tr("Forge returned an unexpected response."));
             else consume(document.object(), task);
         }
         next();
@@ -191,7 +286,7 @@ void Backend::consume(const QJsonObject &document, const Task &task) {
         attributes["id"] = item.value("id").toVariant().toString();
         if (task.kind == "orgs") {
             const auto org = attributes.value("slug").toString();
-            if (org.isEmpty()) { fail(tr("An organization has no API slug.")); continue; }
+            if (org.isEmpty()) { fetchFailed(tr("An organization has no API slug.")); continue; }
             const auto encoded = QString::fromLatin1(QUrl::toPercentEncoding(org));
             m_tasks.enqueue({endpoint("orgs/" + encoded + "/servers"), "servers", org});
             // The server relationship is optional unless explicitly included.
@@ -201,13 +296,13 @@ void Backend::consume(const QJsonObject &document, const Task &task) {
             attributes["host"] = attributes.value("ip_address");
             attributes["port"] = attributes.value("ssh_port", 22);
             attributes["ready"] = attributes.value("is_ready", false).toBool() && !attributes.value("revoked").toBool();
-            m_servers.append(attributes);
+            m_pendingServers.append(attributes);
         } else {
             attributes["org"] = task.org;
             attributes["serverId"] = item.value("relationships").toObject().value("server").toObject().value("data").toObject().value("id").toVariant().toString();
             attributes["user"] = attributes.value("user", "forge");
             attributes["path"] = attributes.value("root_directory");
-            m_sites.append(attributes);
+            m_pendingSites.append(attributes);
         }
     }
     const auto links = document.value("links").toObject();
@@ -221,7 +316,7 @@ void Backend::consume(const QJsonObject &document, const Task &task) {
     }
     if (!url.isEmpty()) {
         // Pagination must never forward a bearer token to another origin or endpoint.
-        if (url.scheme() != m_base.scheme() || url.host() != m_base.host() || url.port() != m_base.port() || url.path() != task.url.path() || !url.userInfo().isEmpty()) fail(tr("Forge returned an unsafe pagination link."));
+        if (url.scheme() != m_base.scheme() || url.host() != m_base.host() || url.port() != m_base.port() || url.path() != task.url.path() || !url.userInfo().isEmpty()) fetchFailed(tr("Forge returned an unsafe pagination link."));
         else {
             if (task.kind == "sites") {
                 QUrlQuery query(url);
@@ -232,7 +327,6 @@ void Backend::consume(const QJsonObject &document, const Task &task) {
             m_tasks.prepend({url, task.kind, task.org});
         }
     }
-    rebuild();
 }
 
 void Backend::rebuild() {
