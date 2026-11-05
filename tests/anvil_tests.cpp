@@ -234,4 +234,3 @@ int main(int argc, char **argv) {
     AnvilTests tests;
     return QTest::qExec(&tests, argc, argv);
 }
-
