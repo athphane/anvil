@@ -232,7 +232,7 @@ ApplicationWindow {
             LayoutMirroring.enabled: Qt.application.layoutDirection === Qt.RightToLeft
             LayoutMirroring.childrenInherit: true
             spacing: 16
-            Label { text: qsTr("Create a Forge API token with permission to list organizations, servers, and sites."); wrapMode: Text.Wrap; Layout.fillWidth: true }
+            Label { text: qsTr("Required token scopes: organization:view and server:view."); wrapMode: Text.Wrap; Layout.fillWidth: true }
             TextField { id: token; objectName: "token"; placeholderText: qsTr("Forge API token"); echoMode: TextInput.Password; selectByMouse: true; Layout.fillWidth: true }
             CheckBox { id: remember; text: qsTr("Remember in the desktop keyring"); checked: true }
             Label { text: qsTr("SSH still uses the keys already on this computer. Your token is never stored in a text file."); color: "#9ca2af"; wrapMode: Text.Wrap; Layout.fillWidth: true }

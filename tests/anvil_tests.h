@@ -5,6 +5,9 @@ class AnvilTests : public QObject {
 private slots:
     void demoSearchAndFilters();
     void apiDiscoversAndPaginates();
+    void apiIncludesServersOnEverySitePage();
+    void apiReportsUnmatchedSites();
+    void apiReportsRequiredScopes();
     void apiRejectsForeignPagination();
     void apiRejectsMalformedResponses();
     void apiReportsRateLimits();

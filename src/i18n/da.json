@@ -85,5 +85,15 @@
   "Options": "Indstillinger",
   "%1@%2": "%1@%2",
   "Enter  Connect    ?  Shortcuts": "Enter  Forbind    ?  Genveje",
-  "Browse your Forge servers and sites, then connect with SSH.": "Se dine Forge-servere og websteder, og forbind via SSH."
+  "Browse your Forge servers and sites, then connect with SSH.": "Se dine Forge-servere og websteder, og forbind via SSH.",
+  "Required token scopes: organization:view and server:view.": "Påkrævede tokenrettigheder: organization:view og server:view.",
+  "This token cannot read %1. Required scope: %2.": "Denne token kan ikke læse %1. Påkrævet rettighed: %2.",
+  "Forge returned %n sites without a matching server. Refresh or check server access.": {
+    "one": "Forge returnerede %n websted uden en tilknyttet server. Opdater, eller kontrollér serveradgangen.",
+    "other": "Forge returnerede %n websteder uden en tilknyttet server. Opdater, eller kontrollér serveradgangen."
+  },
+  "Loaded %n servers; Forge returned no sites.": {
+    "one": "Indlæste %n server; Forge returnerede ingen websteder.",
+    "other": "Indlæste %n servere; Forge returnerede ingen websteder."
+  }
 }

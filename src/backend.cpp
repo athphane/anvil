@@ -128,6 +128,17 @@ void Backend::next() {
     if (m_tasks.isEmpty()) {
         m_busy = false;
         rebuild();
+        int unmatched = 0;
+        for (const auto &value : m_sites) {
+            const auto site = value.toMap();
+            const bool matched = std::any_of(m_servers.cbegin(), m_servers.cend(), [&site](const QVariant &serverValue) {
+                const auto server = serverValue.toMap();
+                return !site.value("serverId").toString().isEmpty() && site.value("serverId") == server.value("id") && site.value("org") == server.value("org");
+            });
+            if (!matched) ++unmatched;
+        }
+        if (unmatched > 0 && m_error.isEmpty()) fail(tr("Forge returned %n sites without a matching server. Refresh or check server access.", nullptr, unmatched));
+        if (!m_servers.isEmpty() && m_sites.isEmpty() && m_error.isEmpty()) m_message = tr("Loaded %n servers; Forge returned no sites.", nullptr, m_servers.size());
         if (m_entries.isEmpty() && m_error.isEmpty()) m_message = tr("No servers or sites are visible to this token.");
         emit stateChanged(); emit refreshFinished();
         return;
@@ -152,7 +163,7 @@ void Backend::next() {
         const int status = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
         if (reply->error() != QNetworkReply::NoError || status != 200) {
             if (status == 401) { fail(tr("Forge rejected this token. Open Account and enter a new token.")); m_tasks.clear(); }
-            else if (status == 403) fail(tr("This token cannot read %1. Check its Forge permissions.").arg(task.url.path()));
+            else if (status == 403) fail(tr("This token cannot read %1. Required scope: %2.").arg(task.url.path(), task.kind == "orgs" ? "organization:view" : "server:view"));
             else if (status == 429) {
                 fail(tr("Forge rate limit reached. Wait %1 seconds, then refresh.").arg(QString::fromUtf8(reply->rawHeader("Retry-After").isEmpty() ? QByteArray("60") : reply->rawHeader("Retry-After"))));
                 m_tasks.clear();
@@ -177,7 +188,8 @@ void Backend::consume(const QJsonObject &document, const Task &task) {
             if (org.isEmpty()) { fail(tr("An organization has no API slug.")); continue; }
             const auto encoded = QString::fromLatin1(QUrl::toPercentEncoding(org));
             m_tasks.enqueue({endpoint("orgs/" + encoded + "/servers"), "servers", org});
-            m_tasks.enqueue({endpoint("orgs/" + encoded + "/sites"), "sites", org});
+            // The server relationship is optional unless explicitly included.
+            m_tasks.enqueue({endpoint("orgs/" + encoded + "/sites?include=server"), "sites", org});
         } else if (task.kind == "servers") {
             attributes["org"] = task.org;
             attributes["host"] = attributes.value("ip_address");
@@ -204,7 +216,15 @@ void Backend::consume(const QJsonObject &document, const Task &task) {
     if (!url.isEmpty()) {
         // Pagination must never forward a bearer token to another origin or endpoint.
         if (url.scheme() != m_base.scheme() || url.host() != m_base.host() || url.port() != m_base.port() || url.path() != task.url.path() || !url.userInfo().isEmpty()) fail(tr("Forge returned an unsafe pagination link."));
-        else m_tasks.prepend({url, task.kind, task.org});
+        else {
+            if (task.kind == "sites") {
+                QUrlQuery query(url);
+                query.removeAllQueryItems("include");
+                query.addQueryItem("include", "server");
+                url.setQuery(query);
+            }
+            m_tasks.prepend({url, task.kind, task.org});
+        }
     }
     rebuild();
 }

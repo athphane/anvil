@@ -1,1 +1,14 @@
-{"%n connections": {"one": "%n connection", "other": "%n connections"}}
+{
+  "%n connections": {
+    "one": "%n connection",
+    "other": "%n connections"
+  },
+  "Forge returned %n sites without a matching server. Refresh or check server access.": {
+    "one": "Forge returned %n site without a matching server. Refresh or check server access.",
+    "other": "Forge returned %n sites without a matching server. Refresh or check server access."
+  },
+  "Loaded %n servers; Forge returned no sites.": {
+    "one": "Loaded %n server; Forge returned no sites.",
+    "other": "Loaded %n servers; Forge returned no sites."
+  }
+}

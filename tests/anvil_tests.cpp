@@ -89,6 +89,61 @@ void AnvilTests::apiRejectsForeignPagination() {
         QVERIFY(backend.error().contains("unsafe"));
         QCOMPARE(server.requests.size(), 1);
     }
+void AnvilTests::apiIncludesServersOnEverySitePage() {
+        FakeForge server;
+        server.respond = [](const QByteArray &path) -> QByteArray {
+            if (path == "/api/orgs") return R"({"data":[{"id":"1","attributes":{"slug":"studio"}}]})";
+            if (path == "/api/orgs/studio/servers") return R"({"data":[{"id":"44","attributes":{"name":"prod","ip_address":"203.0.113.7","ssh_port":22,"is_ready":true}}]})";
+            // Forge may omit linkage unless the relationship is requested.
+            if (!path.contains("include=server")) return R"({"data":[{"id":"81","attributes":{"name":"example.com"}}]})";
+            if (!path.contains("cursor")) return R"({"data":[{"id":"81","attributes":{"name":"example.com","user":"forge","root_directory":"/home/forge/example.com"},"relationships":{"server":{"data":{"id":"44"}}}}],"links":{"next":"/api/orgs/studio/sites?page%5Bcursor%5D=next"}})";
+            return R"({"data":[{"id":"82","attributes":{"name":"docs.example.com","user":"docs","root_directory":"/home/docs/docs.example.com"},"relationships":{"server":{"data":{"id":"44"}}}}]})";
+        };
+        Backend backend(false, server.base());
+        QSignalSpy finished(&backend, &Backend::refreshFinished);
+        backend.authenticate("test-token", false);
+        QTRY_COMPARE(finished.count(), 1);
+        QVERIFY2(backend.error().isEmpty(), qPrintable(backend.error()));
+        backend.setFilter(2);
+        QCOMPARE(backend.entries().size(), 2);
+        QCOMPARE(server.requests.size(), 4);
+        for (const auto &request : server.requests) {
+            if (request.startsWith("GET /api/orgs/studio/sites")) QVERIFY(request.split(' ').at(1).contains("include=server"));
+        }
+    }
+void AnvilTests::apiReportsUnmatchedSites() {
+        FakeForge server;
+        server.respond = [](const QByteArray &path) -> QByteArray {
+            if (path == "/api/orgs") return R"({"data":[{"id":"1","attributes":{"slug":"studio"}}]})";
+            if (path.endsWith("/servers")) return R"({"data":[{"id":"44","attributes":{"name":"prod","ip_address":"203.0.113.7","ssh_port":22}}]})";
+            return R"({"data":[{"id":"81","attributes":{"name":"example.com"}}]})";
+        };
+        Backend backend(false, server.base());
+        QSignalSpy finished(&backend, &Backend::refreshFinished);
+        backend.authenticate("test-token", false);
+        QTRY_COMPARE(finished.count(), 1);
+        QVERIFY(backend.error().contains("without a matching server"));
+        QCOMPARE(backend.total(), 1);
+    }
+void AnvilTests::apiReportsRequiredScopes() {
+        FakeForge server;
+        server.status = 403;
+        server.respond = [](const QByteArray &) { return QByteArray("{}"); };
+        Backend backend(false, server.base());
+        QSignalSpy finished(&backend, &Backend::refreshFinished);
+        backend.authenticate("test-token", false);
+        QTRY_COMPARE(finished.count(), 1);
+        QVERIFY(backend.error().contains("organization:view"));
+        server.status = 200;
+        server.respond = [&server](const QByteArray &path) -> QByteArray {
+            server.status = path == "/api/orgs" ? 200 : 403;
+            if (path == "/api/orgs") return R"({"data":[{"id":"1","attributes":{"slug":"studio"}}]})";
+            return "{}";
+        };
+        backend.refresh();
+        QTRY_COMPARE(finished.count(), 2);
+        QVERIFY(backend.error().contains("server:view"));
+    }
 void AnvilTests::apiRejectsMalformedResponses() {
         FakeForge server;
         server.respond = [](const QByteArray &) { return QByteArray("not json"); };

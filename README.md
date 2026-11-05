@@ -6,7 +6,7 @@ Built with C++ and Qt Quick, packaged with makepkg, and installed as a single bi
 
 ## Get started
 
-Open **Anvil** from the application launcher (`Super + Space`), choose **Connect Laravel Forge**, and enter a token from [Forge's API settings](https://forge.laravel.com/profile/api). The token needs access to list organizations, servers, and sites. The app only makes GET requests to Forge.
+Open **Anvil** from the application launcher (`Super + Space`), choose **Connect Laravel Forge**, and enter a token from [Forge's API settings](https://forge.laravel.com/profile/api). The token needs `organization:view` and `server:view`; Forge uses `server:view` for site listings too. The app only makes GET requests to Forge.
 
 Leave **Remember in the desktop keyring** checked to save the token through Secret Service (`secret-tool`). Uncheck it to keep the supplied token in memory for this session. **Account → Forget token** clears the saved credential. The app does not write a token, inventory cache, or SSH configuration to disk.
 
@@ -55,7 +55,7 @@ Inventory commands read `FORGE_API_TOKEN` from the environment; provide it throu
 
 ## API and limits
 
-Uses the [current Forge API](https://laravel.com/forge/docs/api-reference/introduction), organization-scoped server/site endpoints, and [cursor pagination](https://laravel.com/forge/docs/api-reference/pagination). Requests run sequentially, have timeouts, and reject redirects and foreign pagination links. Permission failures and rate limits appear in the window. Refresh again after a rate limit's stated wait.
+Uses the [current Forge API](https://laravel.com/forge/docs/api-reference/introduction), organization-scoped server/site endpoints, and [cursor pagination](https://laravel.com/forge/docs/api-reference/pagination). Site requests explicitly include the server relationship on every page so sites can be matched to their SSH host. Requests run sequentially, have timeouts, and reject redirects and foreign pagination links. Permission failures, unmatched sites, and rate limits appear in the window. Refresh again after a rate limit's stated wait.
 
 No real Forge account is included in the tests. Live inventory and remote SSH authentication require your token and existing server access.
 
