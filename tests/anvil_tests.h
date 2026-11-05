@@ -13,6 +13,15 @@ private slots:
     void apiReportsRateLimits();
     void sshKeepsRemoteDataQuoted();
     void connectionLaunchesOmarchyTerminal();
+    void sshWorkingAccessSkipsForge();
+    void sshInstallsPublicKeyForSiteUser();
+    void sshExistingKeyIsNotUploadedAgain();
+    void sshStopsOnHostOrNetworkFailures();
+    void sshReportsCreatePermission();
+    void sshWaitsWithoutRepeatedUploads();
+    void sshRejectsPrivateFilesAndForeignLinks();
+    void sshCancellationStopsPolling();
+    void sshPreparationCanRunWithoutTerminal();
     void themeReloadsAfterAtomicReplacement();
     void translatorFollowsLiveLanguageAndFallbacks();
     void realQmlInteractionAndScreenshots();

@@ -13,6 +13,8 @@
 #include <QQuickItem>
 #include <QQuickStyle>
 #include <QScopeGuard>
+#include <QCryptographicHash>
+#include <QRegularExpression>
 #include "anvil_tests.h"
 #include "backend.h"
 #include "theme.h"
@@ -32,6 +34,11 @@ public:
                 connect(socket, &QTcpSocket::readyRead, socket, [this, socket, buffer] {
                     *buffer += socket->readAll();
                     if (!buffer->contains("\r\n\r\n")) return;
+                    const int headerEnd = buffer->indexOf("\r\n\r\n");
+                    const QRegularExpression length("Content-Length: (\\d+)", QRegularExpression::CaseInsensitiveOption);
+                    const int bodySize = length.match(QString::fromLatin1(buffer->left(headerEnd))).captured(1).toInt();
+                    if (buffer->size() < headerEnd + 4 + bodySize || socket->property("responded").toBool()) return;
+                    socket->setProperty("responded", true);
                     const auto request = *buffer;
                     requests.append(request);
                     const auto body = respond(request.split(' ').value(1));
@@ -43,6 +50,38 @@ public:
         });
     }
     QUrl base() const { return QUrl(QString("http://127.0.0.1:%1/api/").arg(serverPort())); }
+};
+
+class SshRig {
+public:
+    QTemporaryDir directory;
+    QString ssh = directory.filePath("ssh"), terminal = directory.filePath("omarchy"), publicPath = directory.filePath("id_ed25519.pub"), output = directory.filePath("terminal-args"), probeOutput = directory.filePath("probe-args");
+    QByteArray key;
+    QString name;
+    QVariantMap entry{{"id","81"},{"serverId","44"},{"org","studio"},{"server","prod"},{"name","example.com"},{"host","203.0.113.7"},{"user","isolated"},{"port",2222},{"kind","site"},{"path","/home/isolated/example.com/current"}};
+    SshRig() {
+        QByteArray blob = QByteArray::fromHex("0000000b") + "ssh-ed25519" + QByteArray::fromHex("00000020") + QByteArray(32, 'x');
+        key = "ssh-ed25519 " + blob.toBase64();
+        name = "Anvil-" + QString::fromLatin1(QCryptographicHash::hash(blob, QCryptographicHash::Sha256).toHex().left(24)) + "-isolated";
+        write(publicPath, key + " test@example.invalid\n");
+        write(directory.filePath("id_ed25519"), "PRIVATE KEY MUST NEVER BE UPLOADED\n");
+        write(terminal, "#!/bin/sh\nprintf '%s\\n' \"$@\" > " + Backend::shellQuote(output).toUtf8() + "\n", true);
+        probe("Permission denied (publickey).", 255);
+    }
+    void probe(const QByteArray &error, int code) {
+        write(ssh, "#!/bin/sh\nprintf '%s\\n' \"$@\" > " + Backend::shellQuote(probeOutput).toUtf8() + "\nprintf '%s\\n' " + Backend::shellQuote(QString::fromUtf8(error)).toUtf8() + " >&2\nexit " + QByteArray::number(code) + "\n", true);
+    }
+    static void write(const QString &path, const QByteArray &bytes, bool executable = false) {
+        QFile file(path);
+        if (!file.open(QIODevice::WriteOnly) || file.write(bytes) != bytes.size()) qFatal("Could not write test fixture");
+        file.close();
+        if (executable) QFile::setPermissions(path, QFile::ReadOwner | QFile::WriteOwner | QFile::ExeOwner);
+    }
+    QByteArray keys(const QString &status) const {
+        return QJsonDocument(QJsonObject{{"data", QJsonArray{QJsonObject{{"id","9"},{"attributes",QJsonObject{{"name",name},{"user","isolated"},{"status",status}}}}}}}).toJson();
+    }
+    QStringList arguments() const { return Backend::sshArguments(entry); }
+    bool start(SshConnection &connection, bool sameHost = true) const { return connection.start("test-token", entry, arguments(), {}, publicPath, true, sameHost); }
 };
 
 void AnvilTests::demoSearchAndFilters() {
@@ -77,6 +116,7 @@ void AnvilTests::apiDiscoversAndPaginates() {
         QCOMPARE(entry.value("port").toInt(), 2222);
         QCOMPARE(entry.value("user").toString(), "isolated");
         QCOMPARE(entry.value("path").toString(), "/home/isolated/example.com/current");
+        QCOMPARE(entry.value("serverId").toString(), "44");
         QVERIFY(backend.command(entry).contains("current"));
     }
 void AnvilTests::apiRejectsForeignPagination() {
@@ -213,6 +253,178 @@ void AnvilTests::themeReloadsAfterAtomicReplacement() {
         QVERIFY(QFile::remove(path));
         QTRY_COMPARE(theme.accent(), QString("#FFD60A"));
     }
+void AnvilTests::sshWorkingAccessSkipsForge() {
+        FakeForge server;
+        SshRig rig;
+        server.respond = [](const QByteArray &) { return QByteArray("{}"); };
+        for (const auto &accepted : {false, true}) {
+            QFile::remove(rig.output);
+            rig.probe(accepted ? "debug1: Server accepts key: /test/key\nPermission denied (publickey)." : "", accepted ? 255 : 0);
+            SshConnection connection(server.base(), rig.directory.path(), rig.ssh, rig.terminal, 5, 300);
+            QSignalSpy finished(&connection, &SshConnection::finished);
+            QVERIFY(rig.start(connection));
+            QTRY_COMPARE(finished.count(), 1);
+            QVERIFY(finished.first().first().toBool());
+            QTRY_VERIFY(QFileInfo(rig.output).size() > 0);
+        }
+        QCOMPARE(server.requests.size(), 0);
+    }
+void AnvilTests::sshInstallsPublicKeyForSiteUser() {
+        FakeForge server;
+        SshRig rig;
+        int posts = 0, polls = 0;
+        server.respond = [&](const QByteArray &) -> QByteArray {
+            if (server.requests.last().startsWith("POST ")) { ++posts; server.status = 202; return {}; }
+            server.status = 200;
+            if (!posts) return R"({"data":[]})";
+            ++polls;
+            return rig.keys(polls == 1 ? "installing" : "installed");
+        };
+        SshConnection connection(server.base(), rig.directory.path(), rig.ssh, rig.terminal, 5, 1000);
+        QSignalSpy finished(&connection, &SshConnection::finished);
+        QSignalSpy failed(&connection, &SshConnection::failed);
+        QVERIFY(rig.start(connection));
+        QTRY_COMPARE(finished.count(), 1);
+        QCOMPARE(failed.count(), 0);
+        QVERIFY(finished.first().first().toBool());
+        QCOMPARE(posts, 1); QCOMPARE(polls, 2);
+        QTRY_VERIFY(QFileInfo(rig.output).size() > 0);
+        for (const auto &request : server.requests) {
+            QVERIFY(request.split(' ').value(1).startsWith("/api/orgs/studio/servers/44/ssh-keys"));
+            QVERIFY(!request.contains("PRIVATE KEY"));
+            if (!request.startsWith("POST ")) continue;
+            const auto body = QJsonDocument::fromJson(request.mid(request.indexOf("\r\n\r\n") + 4)).object();
+            QCOMPARE(body.value("key").toString().toUtf8(), rig.key);
+            QCOMPARE(body.value("user").toString(), "isolated");
+        }
+        QFile probe(rig.probeOutput); QVERIFY(probe.open(QIODevice::ReadOnly));
+        const auto probeArgs = probe.readAll();
+        QVERIFY(probeArgs.contains("StrictHostKeyChecking=yes"));
+        QVERIFY(probeArgs.endsWith("true\n"));
+        QVERIFY(!probeArgs.contains("cd --"));
+        QFile terminal(rig.output); QVERIFY(terminal.open(QIODevice::ReadOnly));
+        const auto terminalArgs = terminal.readAll();
+        QVERIFY(terminalArgs.contains("-i\n"));
+        QVERIFY(terminalArgs.contains("cd -- '/home/isolated/example.com/current'"));
+    }
+void AnvilTests::sshExistingKeyIsNotUploadedAgain() {
+        FakeForge server;
+        SshRig rig;
+        rig.probe("No ED25519 host key is known for 203.0.113.7 and you have requested strict checking.\nHost key verification failed.", 255);
+        server.respond = [&](const QByteArray &path) -> QByteArray {
+            if (!path.contains("cursor")) return R"({"data":[],"links":{"next":"/api/orgs/studio/servers/44/ssh-keys?page%5Bcursor%5D=next"}})";
+            return rig.keys("installed");
+        };
+        SshConnection connection(server.base(), rig.directory.path(), rig.ssh, rig.terminal, 5, 300);
+        QSignalSpy finished(&connection, &SshConnection::finished);
+        QVERIFY(rig.start(connection));
+        QTRY_COMPARE(finished.count(), 1);
+        QVERIFY(finished.first().first().toBool());
+        QCOMPARE(server.requests.size(), 2);
+        for (const auto &request : server.requests) QVERIFY(request.startsWith("GET "));
+    }
+void AnvilTests::sshStopsOnHostOrNetworkFailures() {
+        for (const auto &error : {QByteArray("Connection timed out"), QByteArray("REMOTE HOST IDENTIFICATION HAS CHANGED!")}) {
+            FakeForge server;
+            SshRig rig;
+            rig.probe(error, 255);
+            SshConnection connection(server.base(), rig.directory.path(), rig.ssh, rig.terminal, 5, 300);
+            QSignalSpy finished(&connection, &SshConnection::finished);
+            QVERIFY(rig.start(connection));
+            QTRY_COMPARE(finished.count(), 1);
+            QVERIFY(!finished.first().first().toBool());
+            QCOMPARE(server.requests.size(), 0);
+            QVERIFY(!QFileInfo::exists(rig.output));
+        }
+        FakeForge server;
+        SshRig rig;
+        SshConnection connection(server.base(), rig.directory.path(), rig.ssh, rig.terminal, 5, 300);
+        QSignalSpy finished(&connection, &SshConnection::finished);
+        QVERIFY(rig.start(connection, false));
+        QTRY_COMPARE(finished.count(), 1);
+        QVERIFY(!finished.first().first().toBool());
+        QCOMPARE(server.requests.size(), 0);
+    }
+void AnvilTests::sshReportsCreatePermission() {
+        FakeForge server;
+        SshRig rig;
+        server.respond = [&](const QByteArray &) {
+            server.status = server.requests.last().startsWith("POST ") ? 403 : 200;
+            return QByteArray(R"({"data":[]})");
+        };
+        SshConnection connection(server.base(), rig.directory.path(), rig.ssh, rig.terminal, 5, 300);
+        QSignalSpy finished(&connection, &SshConnection::finished), failed(&connection, &SshConnection::failed);
+        QVERIFY(rig.start(connection));
+        QTRY_COMPARE(finished.count(), 1);
+        QVERIFY(!finished.first().first().toBool());
+        QCOMPARE(failed.count(), 1);
+        QVERIFY(failed.first().first().toString().contains("server:create-keys"));
+        QVERIFY(!QFileInfo::exists(rig.output));
+    }
+void AnvilTests::sshWaitsWithoutRepeatedUploads() {
+        FakeForge server;
+        SshRig rig;
+        int posts = 0;
+        server.respond = [&](const QByteArray &) -> QByteArray {
+            if (server.requests.last().startsWith("POST ")) { server.status = 202; ++posts; return {}; }
+            server.status = 200; return R"({"data":[]})";
+        };
+        SshConnection connection(server.base(), rig.directory.path(), rig.ssh, rig.terminal, 10, 130);
+        QSignalSpy finished(&connection, &SshConnection::finished), failed(&connection, &SshConnection::failed);
+        QVERIFY(rig.start(connection));
+        QTRY_COMPARE(finished.count(), 1);
+        QVERIFY(!finished.first().first().toBool());
+        QCOMPARE(posts, 1);
+        QVERIFY(failed.first().first().toString().contains("not finished"));
+        QVERIFY(!QFileInfo::exists(rig.output));
+    }
+void AnvilTests::sshRejectsPrivateFilesAndForeignLinks() {
+        FakeForge server;
+        SshRig rig;
+        SshConnection connection(server.base(), rig.directory.path(), rig.ssh, rig.terminal, 5, 300);
+        QSignalSpy finished(&connection, &SshConnection::finished);
+        QVERIFY(connection.start("test-token", rig.entry, rig.arguments(), {}, rig.directory.filePath("id_ed25519"), true, true));
+        QTRY_COMPARE(finished.count(), 1);
+        QVERIFY(!finished.first().first().toBool());
+        QCOMPARE(server.requests.size(), 0);
+        rig.write(rig.publicPath, "-----BEGIN OPENSSH PRIVATE KEY-----\nsecret\n");
+        QVERIFY(rig.start(connection));
+        QTRY_COMPARE(finished.count(), 2);
+        QCOMPARE(server.requests.size(), 0);
+        rig.write(rig.publicPath, rig.key);
+        server.respond = [](const QByteArray &) { return QByteArray(R"({"data":[],"links":{"next":"https://attacker.invalid/api/keys"}})"); };
+        QVERIFY(rig.start(connection));
+        QTRY_COMPARE(finished.count(), 3);
+        QVERIFY(!finished.last().first().toBool());
+        QCOMPARE(server.requests.size(), 1);
+    }
+void AnvilTests::sshCancellationStopsPolling() {
+        FakeForge server;
+        SshRig rig;
+        server.respond = [&](const QByteArray &) { return rig.keys("installing"); };
+        SshConnection connection(server.base(), rig.directory.path(), rig.ssh, rig.terminal, 200, 1000);
+        QSignalSpy finished(&connection, &SshConnection::finished);
+        QVERIFY(rig.start(connection));
+        QTRY_COMPARE(server.requests.size(), 1);
+        connection.cancel();
+        QTRY_COMPARE(finished.count(), 1);
+        QTest::qWait(250);
+        QCOMPARE(server.requests.size(), 1);
+        QVERIFY(!QFileInfo::exists(rig.output));
+        QVERIFY(!connection.busy());
+    }
+void AnvilTests::sshPreparationCanRunWithoutTerminal() {
+        FakeForge server;
+        SshRig rig;
+        server.respond = [&](const QByteArray &) { return rig.keys("installed"); };
+        SshConnection connection(server.base(), rig.directory.path(), rig.ssh, rig.terminal, 5, 300);
+        QSignalSpy finished(&connection, &SshConnection::finished);
+        QVERIFY(connection.start("test-token", rig.entry, rig.arguments(), {}, rig.publicPath, true, true, false));
+        QTRY_COMPARE(finished.count(), 1);
+        QVERIFY(finished.first().first().toBool());
+        QVERIFY(!QFileInfo::exists(rig.output));
+        QCOMPARE(server.requests.size(), 1);
+    }
 void AnvilTests::translatorFollowsLiveLanguageAndFallbacks() {
         QTemporaryDir dir;
         const auto language = dir.filePath("language");
@@ -277,6 +489,22 @@ void AnvilTests::realQmlInteractionAndScreenshots() {
         const auto position = compactConnect->mapToScene(QPointF(0, 0));
         QVERIFY(position.y() + compactConnect->height() <= window->height());
         QVERIFY(window->grabWindow().save("../../docs/screenshot-compact-da.png"));
+        auto options = window->findChild<QObject *>("options");
+        QVERIFY(options);
+        QVERIFY(QMetaObject::invokeMethod(options, "open"));
+        QTRY_VERIFY(options->property("visible").toBool());
+        auto installMissing = window->findChild<QObject *>("installMissing");
+        auto publicKey = window->findChild<QObject *>("publicKey");
+        QVERIFY(installMissing && publicKey);
+        QVERIFY(installMissing->property("checked").toBool());
+        QCOMPARE(publicKey->property("text").toString(), QString("~/.ssh/id_ed25519.pub"));
+        QTest::qWait(200);
+        QVERIFY(options->property("height").toDouble() <= window->height());
+        QVERIFY(window->grabWindow().save("../../docs/options-compact-da.png"));
+        window->resize(1120, 740);
+        QTest::qWait(200);
+        QVERIFY(window->grabWindow().save("../../docs/options-da.png"));
+        QMetaObject::invokeMethod(options, "close");
         qApp->removeTranslator(&translator);
     }
 void AnvilTests::write(const QString &path, const QByteArray &contents) {

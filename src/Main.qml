@@ -33,7 +33,7 @@ ApplicationWindow {
     property bool editing: search.activeFocus || account.visible || options.visible
     property bool compact: width < 900 || height < 650
     function connectSelected() {
-        if (selected.key) backend.connectEntry(selected, hostOverride.text, userOverride.text, Number(portOverride.text), identityOverride.text)
+        if (selected.key && !backend.connecting) backend.connectEntry(selected, hostOverride.text, userOverride.text, Number(portOverride.text), identityOverride.text, installMissing.checked, publicKey.text)
     }
     function copySelected() {
         if (selected.key) backend.copyCommand(backend.command(selected, hostOverride.text, userOverride.text, Number(portOverride.text), identityOverride.text))
@@ -71,9 +71,10 @@ ApplicationWindow {
                 }
                 Item { Layout.fillWidth: true }
                 Label { visible: backend.demo; text: qsTr("DEMO"); color: theme.accent; font.pixelSize: 11; font.letterSpacing: 2 }
-                BusyIndicator { running: backend.busy; visible: running; Layout.preferredWidth: 28; Layout.preferredHeight: 28 }
-                AnvilButton { text: qsTr("Refresh"); enabled: backend.hasToken && !backend.busy; onClicked: backend.refresh() }
-                AnvilButton { text: qsTr("Account"); onClicked: account.open() }
+                BusyIndicator { running: backend.busy || backend.connecting; visible: running; Layout.preferredWidth: 28; Layout.preferredHeight: 28 }
+                AnvilButton { text: qsTr("Cancel"); visible: backend.connecting; onClicked: backend.cancelConnection() }
+                AnvilButton { text: qsTr("Refresh"); visible: !backend.connecting; enabled: backend.hasToken && !backend.busy; onClicked: backend.refresh() }
+                AnvilButton { text: qsTr("Account"); enabled: !backend.connecting; onClicked: account.open() }
                 AnvilButton { text: "?"; implicitWidth: 40; onClicked: help.open(); Accessible.name: qsTr("Keyboard shortcuts") }
             }
             Rectangle { Layout.fillWidth: true; height: 1; color: "#2b2d34" }
@@ -185,7 +186,7 @@ ApplicationWindow {
                         RowLayout {
                             Layout.fillWidth: true
                             AnvilButton { text: qsTr("Copy SSH"); enabled: !!win.selected.key; onClicked: win.copySelected() }
-                            AnvilButton { objectName: "connectButton"; text: qsTr("Connect"); highlighted: true; Layout.fillWidth: true; enabled: !!win.selected.key && !!win.selected.host; onClicked: win.connectSelected() }
+                            AnvilButton { objectName: "connectButton"; text: qsTr("Connect"); highlighted: true; Layout.fillWidth: true; enabled: !!win.selected.key && !!win.selected.host && !backend.connecting; onClicked: win.connectSelected() }
                         }
                     }
                 }
@@ -200,7 +201,7 @@ ApplicationWindow {
                 }
                 AnvilButton { text: qsTr("Options"); enabled: !!win.selected.key; onClicked: options.open() }
                 AnvilButton { text: qsTr("Copy SSH"); enabled: !!win.selected.key; onClicked: win.copySelected() }
-                AnvilButton { objectName: "compactConnect"; text: qsTr("Connect"); highlighted: true; enabled: !!win.selected.key && !!win.selected.host; onClicked: win.connectSelected() }
+                AnvilButton { objectName: "compactConnect"; text: qsTr("Connect"); highlighted: true; enabled: !!win.selected.key && !!win.selected.host && !backend.connecting; onClicked: win.connectSelected() }
             }
             Item {
                 visible: !backend.hasToken && backend.total === 0
@@ -211,7 +212,7 @@ ApplicationWindow {
                     Label { text: qsTr("Your servers, without the setup."); font.pixelSize: win.compact ? 22 : 27; font.bold: true; horizontalAlignment: Text.AlignHCenter; wrapMode: Text.Wrap; Layout.fillWidth: true }
                     Label { text: win.compact ? qsTr("Browse your Forge servers and sites, then connect with SSH.") : qsTr("Connect your Laravel Forge account to browse every server and site you can access, then jump straight into SSH."); horizontalAlignment: Text.AlignHCenter; color: "#a3a8b3"; wrapMode: Text.Wrap; Layout.fillWidth: true; font.pixelSize: 15 }
                     AnvilButton { objectName: "addAccount"; text: qsTr("Connect Laravel Forge"); highlighted: true; Layout.alignment: Qt.AlignHCenter; onClicked: account.open() }
-                    Label { text: qsTr("Only reads your Forge inventory."); color: "#777f8e"; Layout.alignment: Qt.AlignHCenter }
+                    Label { text: qsTr("Adds missing public keys when you connect."); color: "#777f8e"; Layout.alignment: Qt.AlignHCenter }
                 }
             }
             RowLayout {
@@ -233,6 +234,7 @@ ApplicationWindow {
             LayoutMirroring.childrenInherit: true
             spacing: 16
             Label { text: qsTr("Required token scopes: organization:view and server:view."); wrapMode: Text.Wrap; Layout.fillWidth: true }
+            Label { text: qsTr("Automatic SSH key installation also needs server:create-keys."); wrapMode: Text.Wrap; Layout.fillWidth: true; color: "#9ca2af" }
             TextField { id: token; objectName: "token"; placeholderText: qsTr("Forge API token"); echoMode: TextInput.Password; selectByMouse: true; Layout.fillWidth: true }
             CheckBox { id: remember; text: qsTr("Remember in the desktop keyring"); checked: true }
             Label { text: qsTr("SSH still uses the keys already on this computer. Your token is never stored in a text file."); color: "#9ca2af"; wrapMode: Text.Wrap; Layout.fillWidth: true }
@@ -248,20 +250,31 @@ ApplicationWindow {
     }
     Dialog {
         id: options
-        anchors.centerIn: parent; width: 520; modal: true
+        objectName: "options"
+        anchors.centerIn: parent; width: 520; height: Math.min(implicitHeight, win.height - 32); modal: true
         background: Rectangle { color: "#20232a"; radius: theme.radius; border.color: "#444b59" }
         Overlay.modal: Rectangle { color: "#b8000000" }
         title: qsTr("Connection options")
-        footer: DialogButtonBox { AnvilButton { text: qsTr("Done"); DialogButtonBox.buttonRole: DialogButtonBox.AcceptRole; onClicked: options.close() } }
-        contentItem: ColumnLayout {
+        footer: DialogButtonBox { background: Rectangle { color: "#20232a"; radius: theme.radius } AnvilButton { text: qsTr("Done"); DialogButtonBox.buttonRole: DialogButtonBox.AcceptRole; onClicked: options.close() } }
+        contentItem: ScrollView {
+            id: optionsScroll
+            clip: true
+            implicitHeight: optionsFields.implicitHeight
+            ColumnLayout {
+            id: optionsFields
+            width: optionsScroll.availableWidth
             LayoutMirroring.enabled: Qt.application.layoutDirection === Qt.RightToLeft
             LayoutMirroring.childrenInherit: true
             spacing: 12
+            CheckBox { id: installMissing; objectName: "installMissing"; text: qsTr("Add missing SSH keys through Forge"); checked: true }
+            TextField { id: publicKey; objectName: "publicKey"; text: backend.suggestedPublicKey; placeholderText: qsTr("Public key file (.pub)"); enabled: installMissing.checked; Layout.fillWidth: true }
+            Label { text: qsTr("Connect checks SSH access first. If needed, it adds this public key for the selected server user and waits for Forge. An explicit identity uses its matching .pub file."); color: "#9ca2af"; wrapMode: Text.Wrap; Layout.fillWidth: true }
             Label { text: qsTr("Optional overrides for this selection. Leave blank to use Forge and your OpenSSH configuration."); wrapMode: Text.Wrap; Layout.fillWidth: true }
             TextField { id: hostOverride; placeholderText: qsTr("Hostname or SSH config alias"); Layout.fillWidth: true }
             TextField { id: userOverride; placeholderText: qsTr("SSH user"); Layout.fillWidth: true }
             TextField { id: portOverride; placeholderText: qsTr("SSH port"); validator: IntValidator { bottom: 1; top: 65535 } Layout.fillWidth: true }
             TextField { id: identityOverride; placeholderText: qsTr("Identity file path (optional)"); Layout.fillWidth: true }
+            }
         }
     }
     Dialog {

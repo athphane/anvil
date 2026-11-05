@@ -36,7 +36,7 @@ int main(int argc, char *argv[]) {
             stream << QJsonDocument(value).toJson(QJsonDocument::Compact) << '\n';
         };
         if (mode == "--help" || mode == "help") {
-            QTextStream(stdout) << "Anvil — Laravel Forge SSH directory\n\nanvil open [--demo]\nanvil list --json\nanvil command --target <key> --json\nanvil check --json\nanvil skill install [--json]\n\nCLI inventory commands read FORGE_API_TOKEN from the environment.\n";
+            QTextStream(stdout) << "Anvil — Laravel Forge SSH directory\n\nanvil open [--demo]\nanvil list --json\nanvil command --target <key> --json\nanvil prepare --target <key> [--public-key <file.pub>] [--identity <file>] --json\nanvil check --json\nanvil skill install [--json]\n\nCLI Forge commands read FORGE_API_TOKEN from the environment.\nPrepare checks SSH access and can add a public key through Forge without opening a terminal.\n";
             return 0;
         }
         if (mode == "skill" && args.contains("install")) {
@@ -53,19 +53,31 @@ int main(int argc, char *argv[]) {
             output({{"ok",ok},{"ssh",QStandardPaths::findExecutable("ssh")},{"terminal",QStandardPaths::findExecutable("omarchy")},{"keyring",QStandardPaths::findExecutable("secret-tool")},{"tls",QSslSocket::supportsSsl()}}, !ok);
             return ok ? 0 : 1;
         }
-        if (mode != "list" && mode != "command") { output({{"error","Unknown command. Run anvil --help."}}, true); return 1; }
+        if (mode != "list" && mode != "command" && mode != "prepare") { output({{"error","Unknown command. Run anvil --help."}}, true); return 1; }
         const auto token = qEnvironmentVariable("FORGE_API_TOKEN");
         if (token.isEmpty()) { output({{"error","Set FORGE_API_TOKEN in the environment."}}, true); return 1; }
         const int position = args.indexOf("--target");
         const auto target = position >= 0 ? args.value(position + 1) : QString();
-        if (mode == "command" && target.isEmpty()) { output({{"error","Pass --target with a key from anvil list --json."}}, true); return 1; }
+        if (mode != "list" && target.isEmpty()) { output({{"error","Pass --target with a key from anvil list --json."}}, true); return 1; }
         Backend backend;
+        QObject::connect(&backend, &Backend::connectionFinished, &app, [&](bool success) {
+            if (success) output({{"prepared",true},{"target",target}});
+            else output({{"error",backend.error()}}, true);
+            app.exit(success ? 0 : 1);
+        });
         QObject::connect(&backend, &Backend::refreshFinished, &app, [&] {
             if (!backend.error().isEmpty()) { output({{"error", backend.error()}}, true); app.exit(1); return; }
             if (mode == "list") { output({{"connections", QJsonArray::fromVariantList(backend.allEntries())}}); app.exit(0); return; }
             for (const auto &value : backend.allEntries()) {
                 const auto entry = value.toMap();
                 if (entry.value("key") != target) continue;
+                if (mode == "prepare") {
+                    const int keyPosition = args.indexOf("--public-key"), identityPosition = args.indexOf("--identity");
+                    if (!backend.prepareEntry(entry, identityPosition < 0 ? QString() : args.value(identityPosition + 1), keyPosition < 0 ? QString() : args.value(keyPosition + 1))) {
+                        output({{"error",backend.error()}}, true); app.exit(1);
+                    }
+                    return;
+                }
                 const auto command = backend.command(entry);
                 if (command.isEmpty()) { output({{"error",backend.error()}}, true); app.exit(1); return; }
                 output({{"command",command},{"target",target}}); app.exit(0); return;

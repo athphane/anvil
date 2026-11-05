@@ -7,6 +7,7 @@
 #include <QSet>
 #include <QVariantList>
 #include <functional>
+#include "sshconnection.h"
 
 class Backend : public QObject {
     Q_OBJECT
@@ -19,6 +20,8 @@ class Backend : public QObject {
     Q_PROPERTY(int filter READ filter WRITE setFilter NOTIFY entriesChanged)
     Q_PROPERTY(int total READ total NOTIFY entriesChanged)
     Q_PROPERTY(bool demo READ demo CONSTANT)
+    Q_PROPERTY(bool connecting READ connecting NOTIFY stateChanged)
+    Q_PROPERTY(QString suggestedPublicKey READ suggestedPublicKey CONSTANT)
 public:
     explicit Backend(bool demo = false, const QUrl &base = QUrl("https://forge.laravel.com/api/"), QObject *parent = nullptr);
     QVariantList entries() const;
@@ -31,6 +34,8 @@ public:
     int filter() const { return m_filter; }
     int total() const { return m_entries.size(); }
     bool demo() const { return m_demo; }
+    bool connecting() const { return m_connection.busy(); }
+    QString suggestedPublicKey() const { return m_demo ? "~/.ssh/id_ed25519.pub" : m_connection.suggestedPublicKey(); }
     void setQuery(const QString &query);
     void setFilter(int filter);
     Q_INVOKABLE void authenticate(const QString &token, bool remember);
@@ -38,7 +43,9 @@ public:
     Q_INVOKABLE void forgetToken();
     Q_INVOKABLE void refresh();
     Q_INVOKABLE QString command(const QVariantMap &entry, const QString &host = {}, const QString &user = {}, int port = 0, const QString &identity = {});
-    Q_INVOKABLE bool connectEntry(const QVariantMap &entry, const QString &host = {}, const QString &user = {}, int port = 0, const QString &identity = {});
+    Q_INVOKABLE bool connectEntry(const QVariantMap &entry, const QString &host = {}, const QString &user = {}, int port = 0, const QString &identity = {}, bool installMissing = true, const QString &publicKey = {});
+    Q_INVOKABLE void cancelConnection();
+    bool prepareEntry(const QVariantMap &entry, const QString &identity = {}, const QString &publicKey = {});
     Q_INVOKABLE void copyCommand(const QString &command);
     Q_INVOKABLE void openTokenPage();
     Q_INVOKABLE void clearError();
@@ -48,6 +55,7 @@ signals:
     void entriesChanged();
     void stateChanged();
     void refreshFinished();
+    void connectionFinished(bool success);
 private:
     struct Task { QUrl url; QString kind; QString org; };
     void next();
@@ -58,6 +66,7 @@ private:
     QUrl endpoint(const QString &path) const;
     QUrl m_base;
     QNetworkAccessManager m_network;
+    SshConnection m_connection;
     QNetworkReply *m_reply = nullptr;
     QQueue<Task> m_tasks;
     QSet<QString> m_seen;

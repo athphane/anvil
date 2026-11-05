@@ -15,7 +15,10 @@
 #include <algorithm>
 #include <memory>
 
-Backend::Backend(bool demo, const QUrl &base, QObject *parent) : QObject(parent), m_base(base), m_demo(demo) {
+Backend::Backend(bool demo, const QUrl &base, QObject *parent) : QObject(parent), m_base(base), m_connection(base), m_demo(demo) {
+    connect(&m_connection, &SshConnection::changed, this, [this] { m_message = m_connection.status(); emit stateChanged(); });
+    connect(&m_connection, &SshConnection::failed, this, &Backend::fail);
+    connect(&m_connection, &SshConnection::finished, this, &Backend::connectionFinished);
     if (demo) {
         m_servers = {
             QVariantMap{{"id","101"},{"org","northstar"},{"name","production-eu"},{"host","203.0.113.24"},{"port",22},{"provider","hetzner"},{"region","Helsinki"},{"ready",true}},
@@ -86,6 +89,7 @@ void Backend::restoreToken() {
 void Backend::authenticate(const QString &token, bool remember) {
     if (m_demo) return;
     if (m_secretBusy) { fail(tr("Please wait for the desktop keyring.")); return; }
+    m_connection.cancel();
     ++m_authGeneration;
     if (token.trimmed().isEmpty() || token.contains('\n') || token.contains('\r')) { fail(tr("Enter a valid Forge API token.")); return; }
     m_token = token.trimmed();
@@ -102,6 +106,7 @@ void Backend::authenticate(const QString &token, bool remember) {
 void Backend::forgetToken() {
     if (m_demo) return;
     if (m_secretBusy) { fail(tr("Please wait for the desktop keyring.")); return; }
+    m_connection.cancel();
     ++m_authGeneration;
     ++m_generation;
     if (m_reply) m_reply->abort();
@@ -116,7 +121,7 @@ void Backend::forgetToken() {
 }
 
 void Backend::refresh() {
-    if (m_demo || m_busy || !hasToken()) return;
+    if (m_demo || m_busy || connecting() || !hasToken()) return;
     ++m_generation; m_error.clear(); m_message.clear(); m_servers.clear(); m_sites.clear(); m_entries.clear(); m_seen.clear(); m_tasks.clear();
     m_busy = true;
     emit entriesChanged(); emit stateChanged();
@@ -182,6 +187,7 @@ void Backend::consume(const QJsonObject &document, const Task &task) {
     for (const auto &value : document.value("data").toArray()) {
         const auto item = value.toObject();
         auto attributes = item.value("attributes").toObject().toVariantMap();
+        if (task.kind == "servers") attributes["apiId"] = attributes.value("id", item.value("id").toVariant()).toString();
         attributes["id"] = item.value("id").toVariant().toString();
         if (task.kind == "orgs") {
             const auto org = attributes.value("slug").toString();
@@ -233,6 +239,7 @@ void Backend::rebuild() {
     m_entries.clear();
     for (const auto &value : m_servers) {
         auto server = value.toMap();
+        server["serverId"] = server.value("apiId", server.value("id"));
         server["kind"] = "server"; server["user"] = "forge";
         server["server"] = server.value("name"); server["path"] = "";
         server["key"] = server.value("org").toString() + ":server:" + server.value("id").toString();
@@ -284,16 +291,23 @@ QString Backend::command(const QVariantMap &entry, const QString &host, const QS
     for (const auto &arg : args) result += ' ' + shellQuote(arg);
     return result;
 }
-bool Backend::connectEntry(const QVariantMap &entry, const QString &host, const QString &user, int port, const QString &identity) {
+bool Backend::connectEntry(const QVariantMap &entry, const QString &host, const QString &user, int port, const QString &identity, bool installMissing, const QString &publicKey) {
     if (m_demo) { fail(tr("Demo connections are disabled. Add your Forge token to connect.")); return false; }
     QString error;
     const auto args = sshArguments(entry, host, user, port, identity, &error);
     if (args.isEmpty()) { fail(error); return false; }
-    const QString terminal = QStandardPaths::findExecutable("omarchy");
-    const QString ssh = QStandardPaths::findExecutable("ssh");
-    if (terminal.isEmpty() || ssh.isEmpty()) { fail(tr("Anvil needs Omarchy and OpenSSH to open a connection.")); return false; }
-    if (!QProcess::startDetached(terminal, QStringList{"launch", "terminal", ssh} + args)) { fail(tr("The terminal could not be started.")); return false; }
-    m_message = tr("Opened a terminal for %1.").arg(entry.value("name").toString()); emit stateChanged(); return true;
+    if (connecting()) return false;
+    m_error.clear();
+    return m_connection.start(m_token, entry, args, identity, publicKey, installMissing, host.trimmed().isEmpty() || host.trimmed() == entry.value("host").toString());
+}
+void Backend::cancelConnection() { m_connection.cancel(); }
+bool Backend::prepareEntry(const QVariantMap &entry, const QString &identity, const QString &publicKey) {
+    QString error;
+    const auto args = sshArguments(entry, {}, {}, 0, identity, &error);
+    if (args.isEmpty()) { fail(error); return false; }
+    if (m_demo || connecting()) return false;
+    m_error.clear();
+    return m_connection.start(m_token, entry, args, identity, publicKey, true, true, false);
 }
 void Backend::copyCommand(const QString &command) { if (!command.isEmpty()) { QGuiApplication::clipboard()->setText(command); m_message = tr("SSH command copied."); emit stateChanged(); } }
 void Backend::openTokenPage() { if (!QDesktopServices::openUrl(QUrl("https://forge.laravel.com/profile/api"))) fail(tr("Could not open your browser.")); }

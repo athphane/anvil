@@ -1,6 +1,6 @@
 pkgname=anvil
 pkgver=0.1.0
-pkgrel=3
+pkgrel=4
 pkgdesc='A dynamic Laravel Forge SSH directory for Omarchy'
 arch=('x86_64' 'aarch64')
 license=('MIT')
